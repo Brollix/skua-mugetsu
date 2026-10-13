@@ -2,6 +2,7 @@
 #
 #   powershell -ExecutionPolicy Bypass -File build.ps1            (with the speed profile)
 #   powershell -ExecutionPolicy Bypass -File build.ps1 -NoPgo     (without it)
+#   powershell -ExecutionPolicy Bypass -File build.ps1 -PrepareOnly   (patched source only, no build)
 #
 # Needs: Rust (the version in RUST_VERSION), Java 17+ (Ruffle compiles its Flash classes
 # with it) and git. The result is build\out\Mugetsu.exe.
@@ -9,7 +10,7 @@
 # Optional, for building without downloads: MUGETSU_RUFFLE_REMOTE (a local clone of Ruffle
 # to fetch the commit from) and MUGETSU_CRATES_DIR (a folder with the unpacked crates, e.g.
 # Cargo's registry/src/index.crates.io-*).
-param([switch]$NoPgo)
+param([switch]$NoPgo, [switch]$PrepareOnly)
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -43,6 +44,7 @@ $crates = @(
     @{ Name = 'wgpu-hal'; Version = '30.0.1' },
     @{ Name = 'gc-arena'; Version = '0.7.0' }
 )
+New-Item -ItemType Directory -Force (Join-Path $ruffle 'patches') | Out-Null
 foreach ($crate in $crates) {
     $name = $crate.Name
     $full = "$name-$($crate.Version)"
@@ -54,13 +56,19 @@ foreach ($crate in $crates) {
         Invoke-WebRequest -UseBasicParsing "https://static.crates.io/crates/$name/$full.crate" -OutFile $archive
         $unpack = Join-Path $work 'crates'
         New-Item -ItemType Directory -Force $unpack | Out-Null
-        Run tar @('-xzf', $archive, '-C', $unpack)
+        # Windows' own tar (another tar on PATH, e.g. Git's, reads 'C:' as a remote host).
+        Run (Join-Path $env:SystemRoot 'System32\tar.exe') @('-xzf', $archive, '-C', $unpack)
         Move-Item (Join-Path $unpack $full) $dest
     }
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $dest '.cargo_vcs_info.json')
     # From Ruffle's folder: inside a repository, git apply skips paths outside the current folder.
     Run git @('-C', $ruffle, 'apply', '--whitespace=nowarn', '-p1', "--directory=patches/$name",
         (Join-Path $root "patches\$name.patch"))
+}
+
+if ($PrepareOnly) {
+    Write-Host "Patched source ready in $ruffle"
+    return
 }
 
 # 4. Build. x86-64-v3 (AVX2) like the released builds; paths in the program are shortened.
