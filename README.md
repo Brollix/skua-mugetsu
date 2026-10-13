@@ -7,6 +7,11 @@ Crowded rooms, big fights and room changes stay at a smooth, steady frame rate.
 
 Unzip, run `Mugetsu.exe`, log in. Nothing to install.
 
+## Contact
+
+Questions, bug reports or feedback: Discord **silver09415**. When reporting a problem, include your log
+(`%LOCALAPPDATA%\ruffle\log\ruffle.log`, it has no account details).
+
 ---
 
 ## What it is
@@ -95,11 +100,6 @@ or read the source code it's built from.
 
 **Where are the logs and settings?**
 `%LOCALAPPDATA%\ruffle` (the log is replaced each time you start Mugetsu).
-
-## Contact
-
-Questions, bug reports or feedback: Discord **silver09415**. When reporting a problem, include your log
-(`%LOCALAPPDATA%\ruffle\log\ruffle.log`, it has no account details).
 
 ## Licenses
 
