@@ -72,6 +72,9 @@ Medium or High, it shows this tip once; it never changes the setting for you.
   message, nothing is downloaded). To switch the check off, put an empty file named `no-update-check`
   next to `Mugetsu.exe`.
 - **The log file contains no account details** (no email, username or chat).
+- **Open source.** All of Mugetsu's code is public in the [`source`](source) folder (GPL-3.0), and from version
+  1.3.1 on, every release is built from it by GitHub Actions: each build's page shows its log and the SHA-256 of
+  the zip it made.
 - **VirusTotal (version 1.3.0):** [zip 0/68](https://www.virustotal.com/gui/file/13259ce30dac7a60baeacb4f9861828b3d9cbd52181020615952ffbc7e401afb) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/a7412863ad5eaa00916ea9f12ff41b89b3a7e8c9097d48c917bb545d616ea207)
 - **SHA-256** of each release zip is listed on its release page, so you can check your download.
 
@@ -87,13 +90,20 @@ the unmodified game is drawn, but use it at your own risk and check AQW's Terms 
 
 **Why does Windows warn me the first time?**
 Mugetsu isn't code-signed (that costs money and requires a public identity), so Windows SmartScreen
-doesn't recognize the publisher. Check the VirusTotal scan and the SHA-256 above if you want to verify it.
+doesn't recognize the publisher. Check the VirusTotal scan and the SHA-256 above if you want to verify it,
+or read the source code it's built from.
 
 **Where are the logs and settings?**
 `%LOCALAPPDATA%\ruffle` (the log is replaced each time you start Mugetsu).
 
+## Contact
+
+Questions, bug reports or feedback: Discord **silver09415**. When reporting a problem, include your log
+(`%LOCALAPPDATA%\ruffle\log\ruffle.log`, it has no account details).
+
 ## Licenses
 
+Mugetsu's own changes are licensed under the [GPL-3.0](LICENSE); the source is in the [`source`](source) folder.
 Mugetsu is a modified build of Ruffle (MIT / Apache-2.0) with modified wgpu-core, wgpu-hal (MIT / Apache-2.0)
 and gc-arena (MIT / CC0). License texts for these and all other included libraries and fonts are in the
 `LICENSES` folder and `THIRD-PARTY-NOTICES.txt` in the download. OpenH264 Video Codec provided by

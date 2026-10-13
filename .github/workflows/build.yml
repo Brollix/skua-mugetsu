@@ -1,0 +1,87 @@
+# Builds Mugetsu from source/ on GitHub's Windows machines.
+#
+# - Every change to source/ on main: a test build, downloadable from the run's page.
+# - Actions > Build Mugetsu > Run workflow, with "Create a draft release" ticked: also makes a
+#   draft release with the zip and its SHA-256 (notes from source/notes/<version>.md), to check
+#   and publish by hand.
+name: Build Mugetsu
+
+on:
+  push:
+    branches: [main]
+    paths: ['source/**', '.github/workflows/build.yml']
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create a draft release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          $version = (Get-Content source/RUST_VERSION -Raw).Trim()
+          rustup toolchain install $version --profile minimal --no-self-update
+          rustup default $version
+          rustc --version
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build
+        shell: pwsh
+        run: ./source/build.ps1
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $source = Get-Content source/build/ruffle/desktop/src/mugetsu.rs -Raw
+          $version = [regex]::Match($source, 'pub const VERSION: &str = "([^"]+)"').Groups[1].Value
+          $dir = 'package/Mugetsu'
+          New-Item -ItemType Directory -Force "$dir/LICENSES" | Out-Null
+          Copy-Item source/build/out/Mugetsu.exe $dir
+          Copy-Item source/release/* $dir -Recurse -Force
+          Copy-Item LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
+          $zip = "Mugetsu-$version.zip"
+          Compress-Archive -Path $dir -DestinationPath $zip
+          $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          $exeHash = (Get-FileHash "$dir/Mugetsu.exe" -Algorithm SHA256).Hash
+          "Mugetsu $version"
+          "zip SHA-256: $zipHash"
+          "exe SHA-256: $exeHash"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "sha=$zipHash" >> $env:GITHUB_OUTPUT
+          "## Mugetsu $version`n`nzip SHA-256: ``$zipHash```nMugetsu.exe SHA-256: ``$exeHash``" >> $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mugetsu-${{ steps.package.outputs.version }}
+          path: package
+
+      - name: Draft release
+        if: ${{ inputs.release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.package.outputs.version }}'
+          $notes = "source/notes/$version.md"
+          if (-not (Test-Path $notes)) { throw "Missing release notes: $notes" }
+          $body = (Get-Content $notes -Raw).Replace('SHA_PLACEHOLDER', '${{ steps.package.outputs.sha }}')
+          Set-Content -Path notes.md -Value $body -Encoding utf8
+          gh release create "v$version" '${{ steps.package.outputs.zip }}' --draft --title "Mugetsu $version" --notes-file notes.md --target $env:GITHUB_SHA
