@@ -1,7 +1,7 @@
 # Mugetsu
 
 **A faster way to play AdventureQuest Worlds on Windows.**
-Crowded rooms, big fights and room changes stay at a smooth, steady 24 FPS (AQW's maximum).
+Crowded rooms, big fights and room changes stay at a smooth, steady frame rate.
 
 ### [⬇ Download the latest version](https://github.com/mugetsu-aqw/mugetsu/releases/latest)
 
@@ -18,6 +18,8 @@ files are included or changed.
 All the changes are inside the player:
 
 - drawing work spread over all CPU cores
+- avatar effects and glows drawn together on shared canvases instead of one by one (since 1.3:
+  several times faster on laptops and built-in graphics)
 - much less work per frame in fights and when changing rooms
 - fixed memory leaks that made long sessions slower and slower
 - smoother mouse handling and frame pacing
@@ -28,18 +30,21 @@ It **does not** change gameplay, automate anything, or give any advantage. It ju
 
 ## How much faster?
 
-In crowded rooms like Yulgar, Mugetsu holds a steady **24 FPS** (AQW's maximum).
+In crowded rooms like Yulgar, Mugetsu held a steady **24 FPS** in testing (at a 24 FPS game setting).
 On the same PC, Flash drops to **7–10 FPS** and standard Ruffle to **8–16 FPS**: Mugetsu is
 **up to 3× faster** than both.
+
+On a laptop with Intel UHD 620 graphics (Quality Low), version 1.3 holds **30 FPS** in a crowded room
+where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 
 ## Requirements
 
 - Windows 10 or 11, 64-bit
 - A graphics card with **Vulkan** (NVIDIA GTX 600 / AMD Radeon HD 7000 / Intel 6th-gen Core or newer).
-  On Intel graphics, Mugetsu uses DirectX 12 (Intel's Vulkan driver crashes on several of its
-  chips); since 1.1 it runs about as well as Vulkan. Without Vulkan, Mugetsu also uses DirectX 12
-  and tells you so, and if a graphics driver crashes when Vulkan starts, it switches to DirectX 12
-  by itself. To choose yourself, **right-click Mugetsu's title bar** → Graphics: Automatic, Vulkan
+  On Intel and Qualcomm (Snapdragon) graphics, Mugetsu uses DirectX 12 (their Vulkan drivers crash
+  or show a black window on several chips); since 1.1 it runs about as well as Vulkan. Without Vulkan,
+  Mugetsu also uses DirectX 12 and tells you so, and if a graphics driver crashes when Vulkan starts,
+  it switches to DirectX 12 by itself. To choose yourself, **right-click Mugetsu's title bar** → Graphics: Automatic, Vulkan
   or DirectX 12 (try DirectX 12 if the window stays black or stutters).
 - **Graphics memory:** 2 GB minimum (with AQW's Quality set to **Low**), 4 GB or more recommended
 - **RAM:** 8 GB minimum, 16 GB recommended
@@ -54,7 +59,8 @@ On the same PC, Flash drops to **7–10 FPS** and standard Ruffle to **8–16 FP
 
 **Low FPS on a laptop or older PC?** In AQW's Options, set **Quality to Low**. Edge smoothing is by far the
 most expensive part of drawing crowded rooms on weak graphics chips; on Low even very weak integrated
-graphics held 24 FPS in a full Battleon in testing.
+graphics held 24 FPS in a full Battleon in testing. If Mugetsu notices built-in graphics running slowly on
+Medium or High, it shows this tip once; it never changes the setting for you.
 
 ## Safety and privacy
 
@@ -66,7 +72,7 @@ graphics held 24 FPS in a full Battleon in testing.
   message, nothing is downloaded). To switch the check off, put an empty file named `no-update-check`
   next to `Mugetsu.exe`.
 - **The log file contains no account details** (no email, username or chat).
-- **VirusTotal (version 1.2.0):** [zip 0/68](https://www.virustotal.com/gui/file/efa9aeb5d461044b308c6db4c34e84d797e0023ca6a61fa6160bdbc4a9d6e194) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/950cc899241d9da1cc7ef1ce75997c13f77a3f2f4ad9e31420dc2c652671eecb)
+- **VirusTotal (version 1.3.0):** [zip 0/68](https://www.virustotal.com/gui/file/13259ce30dac7a60baeacb4f9861828b3d9cbd52181020615952ffbc7e401afb) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/a7412863ad5eaa00916ea9f12ff41b89b3a7e8c9097d48c917bb545d616ea207)
 - **SHA-256** of each release zip is listed on its release page, so you can check your download.
 
 ## FAQ
