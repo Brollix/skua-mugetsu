@@ -1358,6 +1358,141 @@ index 0000000..68c2bdb
 +        }
 +    }
 +}
+diff --git a/src/dx12/suballocation.rs b/src/dx12/suballocation.rs
+index 89c7dc4..2243fed 100644
+--- a/src/dx12/suballocation.rs
++++ b/src/dx12/suballocation.rs
+@@ -22,6 +22,8 @@ enum AllocationInner {
+     /// This resource is suballocated from a heap.
+     Placed {
+         inner: gpu_allocator::d3d12::Allocation,
++        /// AQW build: which allocator it came from (see `crate::aqw_texture_kind`).
++        kind: u8,
+     },
+     /// This resource is a committed resource and does not belong to a
+     /// suballocated heap. We store an approximate size, so we can manage our counters
+@@ -41,7 +43,10 @@ pub(crate) struct Allocation {
+ impl Allocation {
+     pub fn placed(inner: gpu_allocator::d3d12::Allocation, ty: AllocationType) -> Self {
+         Self {
+-            inner: AllocationInner::Placed { inner },
++            inner: AllocationInner::Placed {
++                inner,
++                kind: 0,
++            },
+             ty,
+         }
+     }
+@@ -55,7 +60,7 @@ impl Allocation {
+ 
+     pub fn size(&self) -> u64 {
+         match self.inner {
+-            AllocationInner::Placed { ref inner } => inner.size(),
++            AllocationInner::Placed { ref inner, .. } => inner.size(),
+             AllocationInner::Committed { size } => size,
+         }
+     }
+@@ -64,6 +69,8 @@ impl Allocation {
+ #[derive(Clone)]
+ pub(crate) struct Allocator {
+     inner: Arc<Mutex<gpu_allocator::d3d12::Allocator>>,
++    /// AQW build: for texture kinds 1 and 2 (see `crate::aqw_texture_kind`).
++    kinds: [Arc<Mutex<gpu_allocator::d3d12::Allocator>>; 2],
+     device_memblock_size: u64,
+     host_memblock_size: u64,
+     pub memory_budget_thresholds: wgt::MemoryBudgetThresholds,
+@@ -88,9 +95,22 @@ impl Allocator {
+         let allocator = gpu_allocator::d3d12::Allocator::new(&allocator_desc).inspect_err(|e| {
+             log::error!("Failed to create d3d12 allocator, error: {e}");
+         })?;
++        let kind_allocator = || {
++            gpu_allocator::d3d12::Allocator::new(&gpu_allocator::d3d12::AllocatorCreateDesc {
++                device: gpu_allocator::d3d12::ID3D12DeviceVersion::Device(raw.clone()),
++                debug_settings: Default::default(),
++                allocation_sizes: crate::aqw_kind_sizes(allocation_sizes).into(),
++            })
++            .inspect_err(|e| {
++                log::error!("Failed to create d3d12 allocator, error: {e}");
++            })
++            .map(|allocator| Arc::new(Mutex::new(allocator)))
++        };
++        let kinds = [kind_allocator()?, kind_allocator()?];
+ 
+         Ok(Self {
+             inner: Arc::new(Mutex::new(allocator)),
++            kinds,
+             device_memblock_size,
+             host_memblock_size,
+             memory_budget_thresholds,
+@@ -99,6 +119,21 @@ impl Allocator {
+ 
+     pub(crate) fn generate_report(&self) -> wgt::AllocatorReport {
+         let mut upstream = self.inner.lock().generate_report();
++        // AQW build: all allocators together.
++        for allocator in &self.kinds {
++            let report = allocator.lock().generate_report();
++            let offset = upstream.allocations.len();
++            upstream.allocations.extend(report.allocations);
++            upstream
++                .blocks
++                .extend(report.blocks.into_iter().map(|mut block| {
++                    block.allocations.start += offset;
++                    block.allocations.end += offset;
++                    block
++                }));
++            upstream.total_allocated_bytes += report.total_allocated_bytes;
++            upstream.total_capacity_bytes += report.total_capacity_bytes;
++        }
+ 
+         let allocations = upstream
+             .allocations
+@@ -267,8 +302,12 @@ impl<'a> DeviceAllocationContext<'a> {
+         };
+         counter.sub(allocation.size() as isize);
+ 
+-        if let AllocationInner::Placed { inner } = allocation.inner {
+-            match self.mem_allocator.inner.lock().free(inner) {
++        if let AllocationInner::Placed { inner, kind } = allocation.inner {
++            let allocator = match kind {
++                0 => &self.mem_allocator.inner,
++                kind => &self.mem_allocator.kinds[kind as usize - 1],
++            };
++            match allocator.lock().free(inner) {
+                 Ok(_) => (),
+                 // TODO: Don't panic here
+                 Err(e) => panic!("Failed to destroy dx12 {:?}, {e}", allocation.ty),
+@@ -326,9 +365,13 @@ impl<'a> DeviceAllocationContext<'a> {
+         allocation_info: Direct3D12::D3D12_RESOURCE_ALLOCATION_INFO,
+         location: MemoryLocation,
+     ) -> Result<(Direct3D12::ID3D12Resource, Allocation), crate::DeviceError> {
+-        let name = desc.label.unwrap_or("Unlabeled texture");
++        let kind = crate::aqw_kind();
++        let name = desc.label.unwrap_or(crate::aqw_kind_name(kind));
+ 
+-        let mut allocator = self.mem_allocator.inner.lock();
++        let mut allocator = match kind {
++            0 => self.mem_allocator.inner.lock(),
++            kind => self.mem_allocator.kinds[kind as usize - 1].lock(),
++        };
+ 
+         let allocation_desc = AllocationCreateDesc {
+             name,
+@@ -353,7 +396,14 @@ impl<'a> DeviceAllocationContext<'a> {
+         .into_device_result("Placed texture creation")?;
+ 
+         let resource = resource.ok_or(crate::DeviceError::Unexpected)?;
+-        let wrapped_allocation = Allocation::placed(allocation, AllocationType::Texture);
++        let mut wrapped_allocation = Allocation::placed(allocation, AllocationType::Texture);
++        if let AllocationInner::Placed {
++            kind: allocation_kind,
++            ..
++        } = &mut wrapped_allocation.inner
++        {
++            *allocation_kind = kind;
++        }
+ 
+         Ok((resource, wrapped_allocation))
+     }
 diff --git a/src/dynamic/command.rs b/src/dynamic/command.rs
 index aca5bbc..73e36db 100644
 --- a/src/dynamic/command.rs
@@ -1406,10 +1541,68 @@ index aca5bbc..73e36db 100644
          let barriers = barriers.iter().map(|barrier| BufferBarrier {
              buffer: barrier.buffer.expect_downcast_ref(),
 diff --git a/src/lib.rs b/src/lib.rs
-index ca626f2..02fa1fc 100644
+index ca626f2..7d8798e 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -1445,6 +1445,29 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
+@@ -247,6 +247,49 @@ extern crate wgpu_types as wgt;
+ #[macro_use]
+ extern crate std;
+ 
++#[cfg(any(dx12, vulkan))]
++std::thread_local! {
++    static AQW_TEXTURE_KIND: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
++}
++
++/// AQW build: textures created inside `f` (on this thread) get GPU memory blocks of their own
++/// for their `kind`: 1 = textures that come and go all the time (Ruffle's pooled layers),
++/// 2 = textures that live as long as some object (cacheAsBitmap pictures), 0 = everything else.
++/// Mixed into the same blocks, the holes short-lived textures left were pinned by long-lived
++/// ones, so few blocks were ever given back (a 4 GB card had 3 GB reserved for 1 GB used after
++/// minutes). Kept apart, freeing the spare pooled textures empties whole blocks.
++#[cfg(any(dx12, vulkan))]
++pub fn aqw_texture_kind<R>(kind: u8, f: impl FnOnce() -> R) -> R {
++    let was = AQW_TEXTURE_KIND.with(|k| k.replace(kind.min(2)));
++    let result = f();
++    AQW_TEXTURE_KIND.with(|k| k.set(was));
++    result
++}
++
++/// The kind of the texture being created on this thread (see `aqw_texture_kind`).
++#[cfg(any(dx12, vulkan))]
++pub(crate) fn aqw_kind() -> u8 {
++    AQW_TEXTURE_KIND.with(|k| k.get())
++}
++
++/// Allocation names of the kinds, for the allocator report.
++#[cfg(any(dx12, vulkan))]
++pub(crate) fn aqw_kind_name(kind: u8) -> &'static str {
++    match kind {
++        1 => "Transient texture",
++        2 => "Cached texture",
++        _ => "Unlabeled texture",
++    }
++}
++
++/// Block sizes for kinds 1 and 2: the same as for everything else. (Fixed 16 MB blocks were
++/// tried: textures over 16 MB, such as full-window layers, then each got a driver allocation of
++/// their own, which made creating them about twice as slow in fights.)
++#[cfg(any(dx12, vulkan))]
++pub(crate) fn aqw_kind_sizes(base: AllocationSizes) -> AllocationSizes {
++    base
++}
++
+ /// DirectX12 API internals.
+ #[cfg(dx12)]
+ pub mod dx12;
+@@ -427,6 +470,7 @@ impl From<gpu_allocator::AllocationError> for DeviceError {
+ // and remove this type.
+ // https://github.com/Traverse-Research/gpu-allocator/issues/295
+ #[cfg_attr(not(any(dx12, vulkan)), expect(dead_code))]
++#[derive(Clone, Copy)] // AQW build: one per allocator
+ pub(crate) struct AllocationSizes {
+     pub(crate) min_device_memblock_size: u64,
+     pub(crate) max_device_memblock_size: u64,
+@@ -1445,6 +1489,29 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
      where
          I: Iterator<Item = <Self::A as Api>::CommandBuffer>;
  
@@ -1439,8 +1632,51 @@ index ca626f2..02fa1fc 100644
      unsafe fn transition_buffers<'a, T>(&mut self, barriers: T)
      where
          T: Iterator<Item = BufferBarrier<'a, <Self::A as Api>::Buffer>>;
+diff --git a/src/vulkan/adapter.rs b/src/vulkan/adapter.rs
+index 196daf4..65547f6 100644
+--- a/src/vulkan/adapter.rs
++++ b/src/vulkan/adapter.rs
+@@ -2948,7 +2948,7 @@ impl super::Adapter {
+             wait_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Wait)),
+         };
+ 
+-        let allocation_sizes = AllocationSizes::from_memory_hints(memory_hints).into();
++        let allocation_sizes = AllocationSizes::from_memory_hints(memory_hints);
+ 
+         let buffer_device_address = enabled_extensions.contains(&khr::buffer_device_address::NAME);
+ 
+@@ -2959,8 +2959,20 @@ impl super::Adapter {
+                 physical_device: self.raw,
+                 debug_settings: Default::default(),
+                 buffer_device_address,
+-                allocation_sizes,
++                allocation_sizes: allocation_sizes.into(),
+             })?;
++        let kind_allocator = || {
++            gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
++                instance: self.instance.raw.clone(),
++                device: shared.raw.clone(),
++                physical_device: self.raw,
++                debug_settings: Default::default(),
++                buffer_device_address,
++                allocation_sizes: crate::aqw_kind_sizes(allocation_sizes).into(),
++            })
++            .map(Mutex::new)
++        };
++        let kind_allocators = [kind_allocator()?, kind_allocator()?];
+ 
+         let desc_allocator = super::descriptor::DescriptorAllocator::new(
+             if let Some(di) = self.phd_capabilities.descriptor_indexing {
+@@ -2973,6 +2985,7 @@ impl super::Adapter {
+         let device = super::Device {
+             shared,
+             mem_allocator: Mutex::new(mem_allocator),
++            kind_allocators,
+             desc_allocator: Mutex::new(desc_allocator),
+             valid_ash_memory_types,
+             naga_options,
 diff --git a/src/vulkan/device.rs b/src/vulkan/device.rs
-index 948f77a..e78d47a 100644
+index 948f77a..c256eae 100644
 --- a/src/vulkan/device.rs
 +++ b/src/vulkan/device.rs
 @@ -906,6 +906,12 @@ impl super::Device {
@@ -1456,11 +1692,99 @@ index 948f77a..e78d47a 100644
  
          let Some(memory_properties) = self.get_memory_properties() else {
              return Ok(());
+@@ -1187,10 +1193,14 @@ impl crate::Device for super::Device {
+             unsafe { self.shared.raw.destroy_image(image.raw, None) };
+         })?;
+ 
+-        let name = desc.label.unwrap_or("Unlabeled texture");
++        let kind = crate::aqw_kind();
++        let name = desc.label.unwrap_or(crate::aqw_kind_name(kind));
+ 
+-        let allocation = self
+-            .mem_allocator
++        let allocator = match kind {
++            0 => &self.mem_allocator,
++            kind => &self.kind_allocators[kind as usize - 1],
++        };
++        let allocation = allocator
+             .lock()
+             .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                 name,
+@@ -1224,7 +1234,11 @@ impl crate::Device for super::Device {
+                 image.raw,
+                 desc,
+                 None,
+-                super::TextureMemory::Allocation(allocation),
++                if kind == 0 {
++                    super::TextureMemory::Allocation(allocation)
++                } else {
++                    super::TextureMemory::KindAllocation(allocation, kind)
++                },
+             )
+         })
+     }
+@@ -1242,6 +1256,13 @@ impl crate::Device for super::Device {
+                     log::warn!("Failed to free texture allocation: {err}");
+                 }
+             }
++            super::TextureMemory::KindAllocation(allocation, kind) => {
++                self.counters.texture_memory.sub(allocation.size() as isize);
++                let result = self.kind_allocators[kind as usize - 1].lock().free(allocation);
++                if let Err(err) = result {
++                    log::warn!("Failed to free texture allocation: {err}");
++                }
++            }
+             super::TextureMemory::Dedicated(memory) => unsafe {
+                 self.shared.raw.free_memory(memory, None);
+             },
+@@ -2958,6 +2979,23 @@ impl crate::Device for super::Device {
+             total_allocated_bytes,
+             total_capacity_bytes,
+         } = self.mem_allocator.lock().generate_report();
++        // AQW build: all allocators together.
++        let mut allocations = allocations;
++        let mut blocks = blocks;
++        let mut total_allocated_bytes = total_allocated_bytes;
++        let mut total_capacity_bytes = total_capacity_bytes;
++        for allocator in &self.kind_allocators {
++            let report = allocator.lock().generate_report();
++            let offset = allocations.len();
++            allocations.extend(report.allocations);
++            blocks.extend(report.blocks.into_iter().map(|mut block| {
++                block.allocations.start += offset;
++                block.allocations.end += offset;
++                block
++            }));
++            total_allocated_bytes += report.total_allocated_bytes;
++            total_capacity_bytes += report.total_capacity_bytes;
++        }
+ 
+         let allocations = allocations
+             .into_iter()
 diff --git a/src/vulkan/mod.rs b/src/vulkan/mod.rs
-index 51e7414..13a1b0c 100644
+index 51e7414..3f40c11 100644
 --- a/src/vulkan/mod.rs
 +++ b/src/vulkan/mod.rs
-@@ -1477,7 +1477,45 @@ impl crate::Queue for Queue {
+@@ -557,6 +557,8 @@ impl Drop for DeviceShared {
+ )]
+ pub struct Device {
+     mem_allocator: Mutex<gpu_allocator::vulkan::Allocator>,
++    /// AQW build: for texture kinds 1 and 2 (see `crate::aqw_texture_kind`).
++    kind_allocators: [Mutex<gpu_allocator::vulkan::Allocator>; 2],
+     desc_allocator: Mutex<descriptor::DescriptorAllocator>,
+     valid_ash_memory_types: u32,
+     naga_options: naga::back::spv::Options<'static>,
+@@ -806,6 +808,9 @@ pub enum TextureMemory {
+     // shared memory in GPU allocator (owned by wgpu-hal)
+     Allocation(gpu_allocator::vulkan::Allocation),
+ 
++    // AQW build: shared memory in a texture-kind allocator (owned by wgpu-hal), with its kind
++    KindAllocation(gpu_allocator::vulkan::Allocation, u8),
++
+     // dedicated memory (owned by wgpu-hal)
+     Dedicated(vk::DeviceMemory),
+ 
+@@ -1477,7 +1482,45 @@ impl crate::Queue for Queue {
              .map(|cmd| cmd.raw)
              .collect::<Vec<_>>();
  

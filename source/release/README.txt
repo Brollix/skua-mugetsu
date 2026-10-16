@@ -55,6 +55,9 @@ How to use
   3. Log in as usual.
   Closing the game window closes everything.
 
+  Strong PC? Right-click the title bar -> Frame interpolation for smoother motion (off by
+  default).
+
 Safety and privacy
 ------------------
   - Nothing is installed and no admin rights are needed. Delete the folder to remove it.

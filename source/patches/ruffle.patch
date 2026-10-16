@@ -1237,19 +1237,21 @@ index 7c36d00a9..f8cfa9157 100644
  
          self.stage.set_movie_size(
 diff --git a/core/src/display_object.rs b/core/src/display_object.rs
-index 64e3a3258..c30e5a693 100644
+index 64e3a3258..aee364c37 100644
 --- a/core/src/display_object.rs
 +++ b/core/src/display_object.rs
-@@ -33,7 +33,7 @@ mod avm2_button;
+@@ -33,8 +33,9 @@ mod avm2_button;
  mod bitmap;
  mod container;
  mod edit_text;
 -mod graphic;
 +pub(crate) mod graphic;
  mod interactive;
++pub mod interp;
  mod loader_display;
  mod morph_shape;
-@@ -113,6 +113,10 @@ pub struct BitmapCache {
+ mod movie_clip;
+@@ -113,6 +114,14 @@ pub struct BitmapCache {
  
      /// Whether we warned that this bitmap was too large to be cached
      warned_for_oversize: bool,
@@ -1257,10 +1259,22 @@ index 64e3a3258..c30e5a693 100644
 +    /// AQW build: sub-pixel phase (twips, 0..20) of the cache's top-left corner relative to the
 +    /// object's origin, fixed when first drawn (see `stabilize_cache_bounds`).
 +    aqw_phase: Option<(i32, i32)>,
++
++    /// AQW build: the SWF frame the contents last changed in. With frame interpolation the
++    /// contents move between frames, so the cache is redrawn on every draw of that frame.
++    aqw_changed_frame: u64,
  }
  
  impl BitmapCache {
-@@ -319,6 +323,10 @@ pub struct DisplayObjectBase<'gc> {
+@@ -122,6 +131,7 @@ impl BitmapCache {
+         // Setting the old transform to something invalid is a cheap way of making it invalid,
+         // without reserving an extra field for.
+         self.matrix_a = f32::NAN;
++        self.aqw_changed_frame = interp::frame();
+     }
+ 
+     fn is_dirty(&self, other: &Matrix, source_width: u32, source_height: u32) -> bool {
+@@ -319,6 +329,14 @@ pub struct DisplayObjectBase<'gc> {
  
      /// Rectangle used for 9-slice scaling (`DisplayObject.scale9grid`).
      scaling_grid: Cell<Rectangle<Twips>>,
@@ -1268,18 +1282,36 @@ index 64e3a3258..c30e5a693 100644
 +    /// AQW build: see `settle`.
 +    #[collect(require_static)]
 +    settled: settle::SettledMark,
++
++    /// AQW build: the previous frame's transform, for frame interpolation (see `interp`).
++    #[collect(require_static)]
++    interp: interp::Tracker,
  }
  
  #[derive(Clone)]
-@@ -364,6 +372,7 @@ impl Default for DisplayObjectBase<'_> {
+@@ -364,6 +382,8 @@ impl Default for DisplayObjectBase<'_> {
              scroll_rect: Cell::new(None),
              next_scroll_rect: Default::default(),
              scaling_grid: Default::default(),
 +            settled: Default::default(),
++            interp: Default::default(),
          }
      }
  }
-@@ -989,11 +998,16 @@ pub fn render_base<'gc>(
+@@ -969,7 +989,11 @@ pub fn render_base<'gc>(
+     }
+ 
+     if options.apply_transform {
+-        let transform = this.base().transform(options.apply_matrix);
++        let mut transform = this.base().transform(options.apply_matrix);
++        if options.apply_matrix {
++            // AQW build: frame interpolation (does nothing unless it's on).
++            this.base().interp.blend(&mut transform, this.base().ratio.get());
++        }
+         context.transform_stack.push(&transform);
+     }
+ 
+@@ -989,11 +1013,18 @@ pub fn render_base<'gc>(
              &context.stage.view_matrix(),
          );
          let name = this.name();
@@ -1287,6 +1319,8 @@ index 64e3a3258..c30e5a693 100644
          let mut filters: Vec<Filter> = this.filters().to_owned();
          let swf_version = this.swf_version();
          filters.retain(|f| !f.impotent());
++        // AQW build: with frame interpolation, a glow that pulses is drawn in between too.
++        let filters_blended = this.base().interp.blend_filters(&mut filters);
  
 +        // AQW build: logged after the cache borrow ends (it reads the object's filters).
 +        let mut log_oversize = false;
@@ -1296,10 +1330,14 @@ index 64e3a3258..c30e5a693 100644
              let width = bounds.width().to_pixels().ceil().max(0.0);
              let height = bounds.height().to_pixels().ceil().max(0.0);
              if width <= u16::MAX as f64 && height <= u16::MAX as f64 {
-@@ -1019,13 +1033,19 @@ pub fn render_base<'gc>(
+@@ -1018,14 +1049,22 @@ pub fn render_base<'gc>(
+                     y_max: filter_rect.y_max.to_pixels().ceil() as i32,
                  };
                  let draw_offset = Point::new(filter_rect.x_min, filter_rect.y_min);
-                 if cache.is_dirty(&base_transform.matrix, width, height) {
+-                if cache.is_dirty(&base_transform.matrix, width, height) {
++                let contents_moving = interp::active()
++                    && (cache.aqw_changed_frame == interp::frame() || filters_blended);
++                if contents_moving || cache.is_dirty(&base_transform.matrix, width, height) {
 +                    let (texture_width, texture_height) = cache_texture_size(
 +                        filter_rect.width() as u32,
 +                        filter_rect.height() as u32,
@@ -1318,7 +1356,7 @@ index 64e3a3258..c30e5a693 100644
                          draw_offset,
                          swf_version,
                      );
-@@ -1054,11 +1074,16 @@ pub fn render_base<'gc>(
+@@ -1054,11 +1093,16 @@ pub fn render_base<'gc>(
                          name
                      );
                      cache.warned_for_oversize = true;
@@ -1335,7 +1373,7 @@ index 64e3a3258..c30e5a693 100644
          cache_info
      } else {
          None
-@@ -1073,6 +1098,7 @@ pub fn render_base<'gc>(
+@@ -1073,6 +1117,7 @@ pub fn render_base<'gc>(
              + Twips::from_pixels_i32(cache_info.draw_offset.x);
          let offset_y = cache_info.bounds.y_min - cache_info.base_transform.matrix.ty
              + Twips::from_pixels_i32(cache_info.draw_offset.y);
@@ -1343,7 +1381,59 @@ index 64e3a3258..c30e5a693 100644
  
          if cache_info.dirty {
              let mut transform_stack = TransformStack::new();
-@@ -1504,7 +1530,53 @@ pub trait TDisplayObject<'gc>:
+@@ -1178,6 +1223,29 @@ pub fn render_base<'gc>(
+     }
+ }
+ 
++/// AQW build: `local_to_global_matrix` with the matrices objects are drawn with during frame
++/// interpolation.
++fn blended_global_matrix(object: DisplayObject<'_>) -> Matrix {
++    let base = object.base();
++    let mut matrix = base.interp.peek(base.matrix());
++    if let Some(rect) = object.scroll_rect() {
++        matrix *= Matrix::translate(-rect.x_min, -rect.y_min);
++    }
++    let mut node = object.parent();
++    while let Some(display_object) = node {
++        if display_object.as_stage().is_some() {
++            break;
++        }
++        if let Some(rect) = display_object.scroll_rect() {
++            matrix = Matrix::translate(-rect.x_min, -rect.y_min) * matrix;
++        }
++        let base = display_object.base();
++        matrix = base.interp.peek(base.matrix()) * matrix;
++        node = display_object.parent();
++    }
++    matrix
++}
++
+ /// This applies the **standard** method of `mask` and `scrollRect`.
+ ///
+ /// It uses the stencil buffer so that any pixel drawn in the mask will allow the inner contents to show.
+@@ -1218,10 +1286,18 @@ pub fn apply_standard_mask_and_scroll<'gc, F>(
+     let mask = this.get_render_mask();
+     let mut mask_transform = ruffle_render::transform::Transform::default();
+     if let RenderMask::Stencil(m) | RenderMask::Alpha(m) = mask {
+-        if options.apply_transform {
+-            mask_transform.matrix = this.global_to_local_matrix().unwrap_or_default();
++        if interp::active() {
++            // AQW build: with frame interpolation, the mask goes where both are drawn.
++            if options.apply_transform {
++                mask_transform.matrix = blended_global_matrix(this).inverse().unwrap_or_default();
++            }
++            mask_transform.matrix *= blended_global_matrix(m);
++        } else {
++            if options.apply_transform {
++                mask_transform.matrix = this.global_to_local_matrix().unwrap_or_default();
++            }
++            mask_transform.matrix *= m.local_to_global_matrix();
+         }
+-        mask_transform.matrix *= m.local_to_global_matrix();
+     }
+     if let RenderMask::Stencil(m) = mask {
+         context.commands.push_mask();
+@@ -1504,7 +1580,53 @@ pub trait TDisplayObject<'gc>:
  
      /// Should only be used to implement 'Transform.concatenatedMatrix'
      #[no_dynamic]
@@ -1397,7 +1487,7 @@ index 64e3a3258..c30e5a693 100644
          let mut node = self.parent();
          let mut matrix = self.base().matrix();
          while let Some(display_object) = node {
-@@ -3290,3 +3362,280 @@ impl<'gc> DisplayObjectWeak<'gc> {
+@@ -3290,3 +3412,280 @@ impl<'gc> DisplayObjectWeak<'gc> {
          }
      }
  }
@@ -1815,7 +1905,7 @@ index 54f495949..b4841be8d 100644
  
      /// Calculate and return the [`TextSelection`] at the given position
 diff --git a/core/src/display_object/graphic.rs b/core/src/display_object/graphic.rs
-index 8b139136b..699ad5009 100644
+index 8b139136b..0097c6d54 100644
 --- a/core/src/display_object/graphic.rs
 +++ b/core/src/display_object/graphic.rs
 @@ -18,7 +18,10 @@ use gc_arena::{Collect, Gc, Mutation};
@@ -1863,7 +1953,7 @@ index 8b139136b..699ad5009 100644
              shape: swf_shape,
              movie,
 -            scaled_handle: RefCell::new(TessellationCache::new()),
-+            scaled_handle: Rc::new(RefCell::new(TessellationCache::new())),
++            scaled_handle: TessellationCache::new_shared(),
 +            sliced: Default::default(),
          };
  
@@ -1886,7 +1976,7 @@ index 8b139136b..699ad5009 100644
 +            }),
              movie: context.root_swf.clone(),
 -            scaled_handle: RefCell::new(TessellationCache::new()),
-+            scaled_handle: Rc::new(RefCell::new(TessellationCache::new())),
++            scaled_handle: TessellationCache::new_shared(),
 +            sliced: Default::default(),
          };
  
@@ -2031,7 +2121,7 @@ index 8b139136b..699ad5009 100644
 +                    (
 +                        key,
 +                        Arc::new(scale9::slice_shape(&shared.shape, &child_matrix, &slicing)),
-+                        Rc::new(RefCell::new(TessellationCache::new())),
++                        TessellationCache::new_shared(),
 +                    )
 +                }
 +            };
@@ -2777,8 +2867,463 @@ index 1cd38a85d..29fce9227 100644
                  handled.into()
              }
              ClipEvent::RollOver { from } | ClipEvent::DragOver { from } => {
+diff --git a/core/src/display_object/interp.rs b/core/src/display_object/interp.rs
+new file mode 100644
+index 000000000..9d9dc7c3a
+--- /dev/null
++++ b/core/src/display_object/interp.rs
+@@ -0,0 +1,449 @@
++//! AQW build (Mugetsu): frame interpolation, an option that is off by default.
++//!
++//! AQW runs its scripts and timelines at 24-30 frames a second. With interpolation on, the
++//! window is redrawn at the monitor's refresh rate, and each redraw places every object between
++//! where it was on the previous SWF frame and where it is now, by how much of the time between
++//! the two frames has passed. Only drawing uses the blended transforms: scripts, hit tests and
++//! everything else only ever see the real frames. The price is that each frame shows up to one
++//! frame later than without interpolation.
++//!
++//! Objects that appeared, were swapped for another, flipped, turned or jumped far since the
++//! previous frame are drawn where they are (see `blend_matrix`).
++
++use crate::prelude::*;
++use ruffle_render::filters::Filter;
++use ruffle_render::transform::Transform;
++use std::cell::Cell;
++use std::sync::atomic::{AtomicBool, Ordering};
++use swf::{ColorTransform, Fixed8, Fixed16};
++use web_time::Instant;
++
++/// Moves longer than this (in the parent's pixels) within one frame are jumps, not motion.
++const JUMP_PX: f64 = 100.0;
++
++/// Turns sharper than this within one frame (radians) are drawn as they are.
++const MAX_TURN: f32 = 2.1;
++
++static ENABLED: AtomicBool = AtomicBool::new(false);
++
++thread_local! {
++    /// SWF frames run so far (see `new_frame`).
++    static FRAME: Cell<u64> = const { Cell::new(1) };
++    /// When the current SWF frame finished running (its picture became ready).
++    static FRAME_FINISHED: Cell<Option<Instant>> = const { Cell::new(None) };
++    /// While the screen is drawn with interpolation: how far it is from the previous SWF frame
++    /// (0) to the current one (1).
++    static BLEND: Cell<Option<f32>> = const { Cell::new(None) };
++}
++
++pub fn set_enabled(on: bool) {
++    ENABLED.store(on, Ordering::Relaxed);
++}
++
++pub fn enabled() -> bool {
++    ENABLED.load(Ordering::Relaxed)
++}
++
++/// Called when a SWF frame starts running.
++pub fn new_frame() {
++    FRAME.with(|f| f.set(f.get() + 1));
++}
++
++/// Called when a SWF frame finished running. Blending is timed from here, so how long the
++/// frame's scripts took doesn't make the motion skip ahead.
++pub fn frame_finished() {
++    FRAME_FINISHED.with(|f| f.set(Some(Instant::now())));
++}
++
++/// The number of the current SWF frame.
++pub fn frame() -> u64 {
++    FRAME.with(Cell::get)
++}
++
++/// Called before the screen is drawn; `frame_ms` is the length of a SWF frame.
++pub fn begin_render(frame_ms: f64) {
++    let blend = if enabled() && frame_ms > 0.0 {
++        FRAME_FINISHED
++            .with(Cell::get)
++            .map(|started| (started.elapsed().as_secs_f64() * 1000.0 / frame_ms).clamp(0.0, 1.0) as f32)
++    } else {
++        None
++    };
++    BLEND.with(|b| b.set(blend));
++}
++
++/// Called after the screen was drawn (other drawing, such as `BitmapData.draw`, is never blended).
++pub fn end_render() {
++    BLEND.with(|b| b.set(None));
++}
++
++/// Whether the screen is being drawn with interpolation right now.
++pub fn active() -> bool {
++    BLEND.with(Cell::get).is_some()
++}
++
++/// What an object looked like: its transform, and its ratio (how far a shape tween is).
++type Look = (Matrix, ColorTransform, u16);
++
++struct State {
++    /// The SWF frame this object was last drawn in, and how it looked then.
++    frame: u64,
++    seen: Look,
++    /// How it looked at the end of the frame before `frame`, if it was drawn then.
++    previous: Option<Look>,
++    /// The same for its filters (glows, shadows, ...), kept only for objects that have some.
++    seen_filters: Option<Box<[Filter]>>,
++    previous_filters: Option<Box<[Filter]>>,
++}
++
++impl State {
++    fn previous_at(&self, frame: u64) -> Option<Look> {
++        if self.frame == frame {
++            self.previous
++        } else if self.frame + 1 == frame {
++            Some(self.seen)
++        } else {
++            None
++        }
++    }
++}
++
++/// Per display object: what it looked like on the previous frame. Boxed so it costs one pointer
++/// while interpolation is off. Copies (duplicated clips) start without a history.
++#[derive(Default)]
++pub struct Tracker(Cell<Option<Box<State>>>);
++
++impl Clone for Tracker {
++    fn clone(&self) -> Self {
++        Self::default()
++    }
++}
++
++impl Tracker {
++    /// Records `transform` and `ratio` (the object's real ones) and blends the transform with
++    /// the previous frame's, while the screen is drawn with interpolation.
++    pub fn blend(&self, transform: &mut Transform, ratio: u16) {
++        let Some(t) = BLEND.with(Cell::get) else {
++            return;
++        };
++        let frame = frame();
++        let current = (transform.matrix, transform.color_transform, ratio);
++        let mut state = self.0.take().unwrap_or_else(|| {
++            Box::new(State {
++                frame: 0,
++                seen: current,
++                previous: None,
++                seen_filters: None,
++                previous_filters: None,
++            })
++        });
++        let previous = state.previous_at(frame);
++        if state.frame != frame {
++            state.previous_filters = if state.frame + 1 == frame {
++                state.seen_filters.take()
++            } else {
++                None
++            };
++            state.seen_filters = None;
++        }
++        state.frame = frame;
++        state.seen = current;
++        state.previous = previous;
++        self.0.set(Some(state));
++        if let Some((matrix, color, _)) = previous {
++            transform.matrix = blend_matrix(&matrix, &transform.matrix, t);
++            transform.color_transform = blend_color(&color, &transform.color_transform, t);
++        }
++    }
++
++    /// The matrix `matrix` (the object's real one) is drawn with right now, without recording.
++    pub fn peek(&self, matrix: Matrix) -> Matrix {
++        let Some(t) = BLEND.with(Cell::get) else {
++            return matrix;
++        };
++        let state = self.0.take();
++        let previous = state.as_ref().and_then(|s| s.previous_at(frame()));
++        self.0.set(state);
++        match previous {
++            Some((previous, _, _)) => blend_matrix(&previous, &matrix, t),
++            None => matrix,
++        }
++    }
++
++    /// Records `filters` (the object's real ones, after `blend`) and blends them with the
++    /// previous frame's, e.g. a glow that pulses. Returns whether any changed.
++    pub fn blend_filters(&self, filters: &mut [Filter]) -> bool {
++        let Some(t) = BLEND.with(Cell::get) else {
++            return false;
++        };
++        let Some(mut state) = self.0.take() else {
++            return false;
++        };
++        let mut changed = false;
++        if state.frame == frame() {
++            if state.seen_filters.as_deref() != Some(&*filters) {
++                state.seen_filters = Some(filters.to_vec().into_boxed_slice());
++            }
++            if let Some(previous) = &state.previous_filters
++                && previous.len() == filters.len()
++            {
++                for (filter, previous) in filters.iter_mut().zip(previous.iter()) {
++                    if let Some(blended) = blend_filter(previous, filter, t)
++                        && blended != *filter
++                    {
++                        *filter = blended;
++                        changed = true;
++                    }
++                }
++            }
++        }
++        self.0.set(Some(state));
++        changed
++    }
++
++    /// The ratio a shape tween (`MorphShape`) is drawn at right now, given its real one: AQW's
++    /// skill cooldown wipes, for example, are shape tweens stepped once per frame.
++    pub fn ratio(&self, ratio: u16) -> u16 {
++        let Some(t) = BLEND.with(Cell::get) else {
++            return ratio;
++        };
++        let state = self.0.take();
++        let previous = state.as_ref().and_then(|s| s.previous_at(frame()));
++        self.0.set(state);
++        let Some((_, _, previous)) = previous else {
++            return ratio;
++        };
++        // Each new in-between ratio is a new tessellation, so a tween moves on in a few steps
++        // per frame (however often the screen is drawn): more for a fast one, such as the quick
++        // cooldown sweep all other skills get when one is used, up to 8.
++        let delta = (i32::from(ratio) - i32::from(previous)).unsigned_abs();
++        let steps = delta.div_ceil(1024).clamp(1, 8) as f32;
++        blend_ratio(previous, ratio, (t * steps).floor() / steps)
++    }
++}
++
++/// Ratios are blended in steps of 16 (of 65535), so nearby draws can share a tessellation.
++fn blend_ratio(from: u16, to: u16, t: f32) -> u16 {
++    let delta = i32::from(to) - i32::from(from);
++    // A jump of most of the tween (e.g. it started over) isn't motion.
++    if delta == 0 || delta.abs() > 49152 {
++        return to;
++    }
++    let blended = i32::from(from) + (delta as f32 * t).round() as i32;
++    if blended == i32::from(to) {
++        return to;
++    }
++    let stepped = (blended + 8) / 16 * 16;
++    // Never past the real ratio, and exactly it at the end.
++    let stepped = if delta > 0 {
++        stepped.min(i32::from(to))
++    } else {
++        stepped.max(i32::from(to))
++    };
++    stepped.clamp(0, 65535) as u16
++}
++
++fn lerp(from: f32, to: f32, t: f32) -> f32 {
++    from + (to - from) * t
++}
++
++fn lerp_twips(from: Twips, to: Twips, t: f32) -> Twips {
++    Twips::new(from.get() + ((to.get() - from.get()) as f32 * t).round() as i32)
++}
++
++fn blend_matrix(from: &Matrix, to: &Matrix, t: f32) -> Matrix {
++    if from == to {
++        return *to;
++    }
++    let dx = (to.tx - from.tx).to_pixels();
++    let dy = (to.ty - from.ty).to_pixels();
++    if dx.hypot(dy) > JUMP_PX {
++        return *to;
++    }
++    let mut matrix = *to;
++    matrix.tx = lerp_twips(from.tx, to.tx, t);
++    matrix.ty = lerp_twips(from.ty, to.ty, t);
++    if (from.a, from.b, from.c, from.d) != (to.a, to.b, to.c, to.d) {
++        // Mirrored on one frame and not the other (e.g. a character turning round): no blend.
++        let det_from = from.a * from.d - from.b * from.c;
++        let det_to = to.a * to.d - to.b * to.c;
++        if (det_from < 0.0) != (det_to < 0.0) {
++            return *to;
++        }
++        // Each axis turns and stretches, so rotations keep their size halfway through.
++        let (Some((a, b)), Some((c, d))) = (
++            blend_axis((from.a, from.b), (to.a, to.b), t),
++            blend_axis((from.c, from.d), (to.c, to.d), t),
++        ) else {
++            return *to;
++        };
++        (matrix.a, matrix.b, matrix.c, matrix.d) = (a, b, c, d);
++    }
++    matrix
++}
++
++fn blend_axis(from: (f32, f32), to: (f32, f32), t: f32) -> Option<(f32, f32)> {
++    let from_len = from.0.hypot(from.1);
++    let to_len = to.0.hypot(to.1);
++    if from_len < 1e-4 || to_len < 1e-4 {
++        return Some((lerp(from.0, to.0, t), lerp(from.1, to.1, t)));
++    }
++    let from_angle = from.1.atan2(from.0);
++    let mut turn = to.1.atan2(to.0) - from_angle;
++    if turn > std::f32::consts::PI {
++        turn -= std::f32::consts::TAU;
++    } else if turn < -std::f32::consts::PI {
++        turn += std::f32::consts::TAU;
++    }
++    if turn.abs() > MAX_TURN {
++        return None;
++    }
++    let angle = from_angle + turn * t;
++    let len = lerp(from_len, to_len, t);
++    Some((len * angle.cos(), len * angle.sin()))
++}
++
++fn lerp16(from: Fixed16, to: Fixed16, t: f32) -> Fixed16 {
++    if from == to {
++        to
++    } else {
++        Fixed16::from_f32(lerp(from.to_f32(), to.to_f32(), t))
++    }
++}
++
++fn lerp8(from: Fixed8, to: Fixed8, t: f32) -> Fixed8 {
++    if from == to {
++        to
++    } else {
++        Fixed8::from_f32(lerp(from.to_f32(), to.to_f32(), t))
++    }
++}
++
++fn lerp_rgba(from: Color, to: Color, t: f32) -> Color {
++    let c = |a: u8, b: u8| lerp(f32::from(a), f32::from(b), t).round() as u8;
++    Color::from_rgba(u32::from_be_bytes([
++        c(from.a, to.a),
++        c(from.r, to.r),
++        c(from.g, to.g),
++        c(from.b, to.b),
++    ]))
++}
++
++/// The filter between `from` and `to`, if they're the same kind with the same options.
++fn blend_filter(from: &Filter, to: &Filter, t: f32) -> Option<Filter> {
++    Some(match (from, to) {
++        (Filter::GlowFilter(from), Filter::GlowFilter(to)) if from.flags == to.flags => {
++            Filter::GlowFilter(swf::GlowFilter {
++                color: lerp_rgba(from.color, to.color, t),
++                blur_x: lerp16(from.blur_x, to.blur_x, t),
++                blur_y: lerp16(from.blur_y, to.blur_y, t),
++                strength: lerp8(from.strength, to.strength, t),
++                flags: to.flags,
++            })
++        }
++        (Filter::DropShadowFilter(from), Filter::DropShadowFilter(to))
++            if from.flags == to.flags =>
++        {
++            Filter::DropShadowFilter(swf::DropShadowFilter {
++                color: lerp_rgba(from.color, to.color, t),
++                blur_x: lerp16(from.blur_x, to.blur_x, t),
++                blur_y: lerp16(from.blur_y, to.blur_y, t),
++                angle: lerp16(from.angle, to.angle, t),
++                distance: lerp16(from.distance, to.distance, t),
++                strength: lerp8(from.strength, to.strength, t),
++                flags: to.flags,
++            })
++        }
++        (Filter::BlurFilter(from), Filter::BlurFilter(to)) if from.flags == to.flags => {
++            Filter::BlurFilter(swf::BlurFilter {
++                blur_x: lerp16(from.blur_x, to.blur_x, t),
++                blur_y: lerp16(from.blur_y, to.blur_y, t),
++                flags: to.flags,
++            })
++        }
++        (Filter::BevelFilter(from), Filter::BevelFilter(to)) if from.flags == to.flags => {
++            Filter::BevelFilter(swf::BevelFilter {
++                shadow_color: lerp_rgba(from.shadow_color, to.shadow_color, t),
++                highlight_color: lerp_rgba(from.highlight_color, to.highlight_color, t),
++                blur_x: lerp16(from.blur_x, to.blur_x, t),
++                blur_y: lerp16(from.blur_y, to.blur_y, t),
++                angle: lerp16(from.angle, to.angle, t),
++                distance: lerp16(from.distance, to.distance, t),
++                strength: lerp8(from.strength, to.strength, t),
++                flags: to.flags,
++            })
++        }
++        _ => return None,
++    })
++}
++
++fn blend_color(from: &ColorTransform, to: &ColorTransform, t: f32) -> ColorTransform {
++    if from == to {
++        return *to;
++    }
++    let mul = |a: Fixed8, b: Fixed8| Fixed8::from_f32(lerp(a.to_f32(), b.to_f32(), t));
++    let add = |a: i16, b: i16| lerp(a as f32, b as f32, t).round() as i16;
++    ColorTransform {
++        r_multiply: mul(from.r_multiply, to.r_multiply),
++        g_multiply: mul(from.g_multiply, to.g_multiply),
++        b_multiply: mul(from.b_multiply, to.b_multiply),
++        a_multiply: mul(from.a_multiply, to.a_multiply),
++        r_add: add(from.r_add, to.r_add),
++        g_add: add(from.g_add, to.g_add),
++        b_add: add(from.b_add, to.b_add),
++        a_add: add(from.a_add, to.a_add),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn rotation_keeps_its_size() {
++        let from = Matrix::IDENTITY;
++        let to = Matrix::rotate(1.0);
++        let half = blend_matrix(&from, &to, 0.5);
++        assert!((half.a.hypot(half.b) - 1.0).abs() < 1e-5);
++        assert!((half.b.atan2(half.a) - 0.5).abs() < 1e-5);
++    }
++
++    #[test]
++    fn jumps_and_flips_are_not_blended() {
++        let from = Matrix::translate(Twips::ZERO, Twips::ZERO);
++        let far = Matrix::translate(Twips::from_pixels(500.0), Twips::ZERO);
++        assert_eq!(blend_matrix(&from, &far, 0.5), far);
++        let flipped = Matrix::scale(-1.0, 1.0);
++        assert_eq!(blend_matrix(&from, &flipped, 0.5), flipped);
++        let near = Matrix::translate(Twips::from_pixels(10.0), Twips::ZERO);
++        assert_eq!(blend_matrix(&from, &near, 0.5).tx, Twips::from_pixels(5.0));
++    }
++
++    #[test]
++    fn glows_blend_and_other_kinds_do_not() {
++        let glow = |blur: f32, alpha: u8| {
++            Filter::GlowFilter(swf::GlowFilter {
++                color: Color::from_rgba(u32::from_be_bytes([alpha, 255, 0, 0])),
++                blur_x: Fixed16::from_f32(blur),
++                blur_y: Fixed16::from_f32(blur),
++                strength: Fixed8::from_f32(1.0),
++                flags: swf::GlowFilterFlags::empty(),
++            })
++        };
++        assert_eq!(blend_filter(&glow(2.0, 0), &glow(6.0, 200), 0.5), Some(glow(4.0, 100)));
++        let blur = Filter::BlurFilter(swf::BlurFilter {
++            blur_x: Fixed16::from_f32(4.0),
++            blur_y: Fixed16::from_f32(4.0),
++            flags: swf::BlurFilterFlags::empty(),
++        });
++        assert_eq!(blend_filter(&blur, &glow(2.0, 0), 0.5), None);
++    }
++
++    #[test]
++    fn ratios_blend_in_steps_and_skip_restarts() {
++        assert_eq!(blend_ratio(736, 1473, 0.5), 1104);
++        assert_eq!(blend_ratio(736, 1473, 1.0), 1473);
++        assert_eq!(blend_ratio(65535, 0, 0.5), 0);
++        assert_eq!(blend_ratio(500, 500, 0.3), 500);
++    }
++}
 diff --git a/core/src/display_object/morph_shape.rs b/core/src/display_object/morph_shape.rs
-index 7d81315aa..0bc51ad94 100644
+index 7d81315aa..d7d67aa30 100644
 --- a/core/src/display_object/morph_shape.rs
 +++ b/core/src/display_object/morph_shape.rs
 @@ -40,6 +40,12 @@ pub struct MorphShapeData<'gc> {
@@ -2794,6 +3339,81 @@ index 7d81315aa..0bc51ad94 100644
      pub fn from_swf_tag(
          gc_context: &Mutation<'gc>,
          tag: swf::DefineMorphShape,
+@@ -114,7 +120,13 @@ impl<'gc> TDisplayObject<'gc> for MorphShape<'gc> {
+     fn render_self(self, context: &mut RenderContext) {
+         let ratio = self.ratio();
+         let shared = self.0.shared.get();
+-        let shape_handle = shared.get_shape(context, ratio);
++        // AQW build: with frame interpolation, drawn between the previous and current ratio.
++        let blended = self.base().interp.ratio(ratio);
++        let shape_handle = if blended == ratio {
++            shared.get_shape(context, ratio)
++        } else {
++            shared.get_blended_shape(context, blended)
++        };
+         context
+             .commands
+             .render_shape(shape_handle, context.transform_stack.transform());
+@@ -199,6 +211,9 @@ pub struct MorphShapeShared {
+     start: swf::MorphShape,
+     end: swf::MorphShape,
+     frames: RefCell<fnv::FnvHashMap<u16, Frame>>,
++    /// AQW build: the last few in-between ratios drawn with frame interpolation, most recent
++    /// last. Kept apart from `frames`, which keeps every ratio forever.
++    blended: RefCell<Vec<(u16, ShapeHandle)>>,
+     movie: Arc<SwfMovie>,
+ }
+ 
+@@ -209,6 +224,7 @@ impl MorphShapeShared {
+             start: swf_tag.start.clone(),
+             end: swf_tag.end.clone(),
+             frames: RefCell::new(fnv::FnvHashMap::default()),
++            blended: RefCell::new(Vec::new()),
+             movie,
+         }
+     }
+@@ -243,6 +259,41 @@ impl MorphShapeShared {
+         }
+     }
+ 
++    /// AQW build: the `ShapeHandle` for an in-between ratio of frame interpolation.
++    fn get_blended_shape<'gc>(
++        &self,
++        context: &mut RenderContext<'_, 'gc>,
++        ratio: u16,
++    ) -> ShapeHandle {
++        // Several instances (e.g. the wipes of all skills cooling down) can share a tween.
++        const KEEP: usize = 16;
++        if let Some(frame) = self.frames.borrow().get(&ratio)
++            && let Some(handle) = &frame.shape_handle
++        {
++            return handle.clone();
++        }
++        let mut blended = self.blended.borrow_mut();
++        if let Some(index) = blended.iter().position(|(r, _)| *r == ratio) {
++            let entry = blended.remove(index);
++            let handle = entry.1.clone();
++            blended.push(entry);
++            return handle;
++        }
++        let frame = self.build_morph_frame(ratio);
++        let library = context
++            .library
++            .library_for_movie(self.movie.clone())
++            .unwrap();
++        let handle = context
++            .renderer
++            .register_shape((&frame.shape).into(), &MovieLibrarySource { library });
++        if blended.len() >= KEEP {
++            blended.remove(0);
++        }
++        blended.push((ratio, handle.clone()));
++        handle
++    }
++
+     fn build_morph_frame(&self, ratio: u16) -> Frame {
+         // Interpolate MorphShapes into a Shape.
+         use swf::{FillStyle, LineStyle, ShapeRecord, ShapeStyles};
 diff --git a/core/src/display_object/movie_clip.rs b/core/src/display_object/movie_clip.rs
 index 63b3eae7e..69a84027c 100644
 --- a/core/src/display_object/movie_clip.rs
@@ -3166,10 +3786,19 @@ index 0c50b8c58..495f9671a 100644
              context: &mut dyn LayoutContext<'gc>,
              span: &TextSpan,
 diff --git a/core/src/lib.rs b/core/src/lib.rs
-index d76c1cba7..070234679 100644
+index d76c1cba7..8143783cc 100644
 --- a/core/src/lib.rs
 +++ b/core/src/lib.rs
-@@ -13,6 +13,7 @@ pub use display_object::{StageAlign, StageDisplayState, StageScaleMode};
+@@ -8,11 +8,16 @@
+ #[macro_use]
+ mod display_object;
+ pub use display_object::{StageAlign, StageDisplayState, StageScaleMode};
++/// AQW build: frees GPU geometry of shapes not drawn for a while (when GPU memory is low).
++pub use tessellation_cache::evict_unused as evict_unused_shapes;
++/// AQW build: frame interpolation (an option, off by default).
++pub use display_object::interp as frame_interpolation;
+ 
+ #[macro_use]
  extern crate num_derive;
  
  #[macro_use]
@@ -3177,7 +3806,7 @@ index d76c1cba7..070234679 100644
  mod avm1;
  mod avm2;
  mod avm_rng;
-@@ -77,3 +78,42 @@ pub const DEFAULT_PLAYER_VERSION: u8 = 32;
+@@ -77,3 +82,42 @@ pub const DEFAULT_PLAYER_VERSION: u8 = 32;
  
  /// Path to the raw playerglobal ABC, for use as an `asc.jar` import library.
  pub const PLAYERGLOBAL_ABC_PATH: &str = env!("RUFFLE_PLAYERGLOBAL_ABC_PATH");
@@ -3611,7 +4240,7 @@ index 74188cd5e..2bc342602 100644
      }
  
 diff --git a/core/src/player.rs b/core/src/player.rs
-index 675ef3a78..6d77cdb1a 100644
+index 675ef3a78..50b747f3e 100644
 --- a/core/src/player.rs
 +++ b/core/src/player.rs
 @@ -144,6 +144,13 @@ pub struct MouseData<'gc> {
@@ -3853,7 +4482,20 @@ index 675ef3a78..6d77cdb1a 100644
                      // Pressed on a hovered object.
                      if let Some(over_object) = context.mouse_data.hovered {
                          events.push((over_object, event));
-@@ -2088,6 +2253,16 @@ impl Player {
+@@ -2050,6 +2215,7 @@ impl Player {
+ 
+     #[instrument(level = "debug", skip_all)]
+     pub fn run_frame(&mut self) {
++        crate::display_object::interp::new_frame();
+         let frame_time = self.frame_time(750_000_000.0);
+         let frame_time = Duration::from_nanos(frame_time as u64);
+         let (mut execution_limit, may_execute_while_streaming) = match self.load_behavior {
+@@ -2084,10 +2250,21 @@ impl Player {
+         });
+ 
+         self.needs_render = true;
++        crate::display_object::interp::frame_finished();
+     }
  
      #[instrument(level = "debug", skip_all)]
      pub fn render(&mut self) {
@@ -3870,15 +4512,19 @@ index 675ef3a78..6d77cdb1a 100644
          let invalidated = self.enter_arena(|_, gc_root, _| gc_root.stage.invalidated());
  
          if invalidated {
-@@ -2099,6 +2274,7 @@ impl Player {
+@@ -2099,6 +2276,11 @@ impl Player {
  
          let mut background_color = Color::WHITE;
  
++        // AQW build: the clock shapes are stamped with when drawn (see `tessellation_cache`).
++        crate::tessellation_cache::set_clock(self.start_time.elapsed().as_secs() as u32);
++        // AQW build: frame interpolation blends objects' transforms while the stage is walked.
++        crate::display_object::interp::begin_render(self.frame_duration().as_millis());
 +        let walk_started = Instant::now();
          let (cache_draws, commands) = self.enter_arena_mut(|gc_context, gc_root, this| {
              let stage = gc_root.stage;
  
-@@ -2116,6 +2292,11 @@ impl Player {
+@@ -2116,6 +2298,11 @@ impl Player {
                  stage,
              };
  
@@ -3890,7 +4536,7 @@ index 675ef3a78..6d77cdb1a 100644
              stage.render_viewport(&mut render_context);
  
              #[cfg(feature = "egui")]
-@@ -2125,6 +2306,13 @@ impl Player {
+@@ -2125,6 +2312,13 @@ impl Player {
                      .draw_debug_rects(&mut render_context, gc_root.dynamic_root);
              }
  
@@ -3904,15 +4550,16 @@ index 675ef3a78..6d77cdb1a 100644
              background_color =
                  if stage.window_mode() != WindowMode::Transparent || stage.is_fullscreen() {
                      stage.background_color().unwrap_or(Color::WHITE)
-@@ -2139,6 +2327,7 @@ impl Player {
+@@ -2139,6 +2333,8 @@ impl Player {
              (cache_draws, commands)
          });
  
++        crate::display_object::interp::end_render();
 +        crate::add_render_walk_micros(walk_started.elapsed().as_micros() as u64);
          self.renderer
              .submit_frame(background_color, commands, cache_draws);
  
-@@ -2440,11 +2629,58 @@ impl Player {
+@@ -2440,11 +2636,58 @@ impl Player {
          self.update_mouse_state(EnumSet::empty(), false, &mut false);
  
          // GC
@@ -3972,7 +4619,7 @@ index 675ef3a78..6d77cdb1a 100644
      pub fn flush_shared_objects(&mut self) {
          self.update(|context| {
              if let Some(mut avm1_activation) =
-@@ -3002,6 +3238,8 @@ impl PlayerBuilder {
+@@ -3002,6 +3245,8 @@ impl PlayerBuilder {
                  middle_pressed: None,
                  forced_cursor: None,
                  updating_drop_target: false,
@@ -3981,7 +4628,7 @@ index 675ef3a78..6d77cdb1a 100644
              },
              avm1_shared_objects: HashMap::new(),
              avm2_shared_objects: HashMap::new(),
-@@ -3085,6 +3323,8 @@ impl PlayerBuilder {
+@@ -3085,6 +3330,8 @@ impl PlayerBuilder {
                  frame_phase: Default::default(),
                  frame_accumulator: FloatDuration::ZERO,
                  recent_run_frame_timings: VecDeque::with_capacity(10),
@@ -3990,7 +4637,7 @@ index 675ef3a78..6d77cdb1a 100644
                  start_time: Instant::now(),
                  time_offset: 0,
                  time_til_next_timer: None,
-@@ -3252,6 +3492,7 @@ fn run_mouse_pick<'gc>(
+@@ -3252,6 +3499,7 @@ fn run_mouse_pick<'gc>(
      context: &mut UpdateContext<'gc>,
      require_button_mode: bool,
  ) -> Option<InteractiveObject<'gc>> {
@@ -3998,7 +4645,7 @@ index 675ef3a78..6d77cdb1a 100644
      context.stage.iter_render_list().rev().find_map(|level| {
          level.as_interactive().and_then(|l| {
              if l.as_displayobject().movie().is_action_script_3() {
-@@ -3320,3 +3561,148 @@ pub enum PlayerMode {
+@@ -3320,3 +3568,148 @@ pub enum PlayerMode {
      /// Represents the debug version of Flash Player, i.e. flashplayerdebugger.
      Debug,
  }
@@ -4148,13 +4795,139 @@ index 675ef3a78..6d77cdb1a 100644
 +    );
 +}
 diff --git a/core/src/tessellation_cache.rs b/core/src/tessellation_cache.rs
-index cacd85384..49ca11e7f 100644
+index cacd85384..641e2de79 100644
 --- a/core/src/tessellation_cache.rs
 +++ b/core/src/tessellation_cache.rs
-@@ -83,6 +83,33 @@ impl TessellationCache {
-         self.entries[self.len - 1] = Some((scale, handle));
+@@ -1,4 +1,6 @@
+ use ruffle_render::backend::ShapeHandle;
++use std::cell::{Cell, RefCell};
++use std::rc::{Rc, Weak};
+ 
+ /// The scale ratio threshold beyond which a graphic or a drawing will be retessellated.
+ const RETESSELLATION_SCALE_THRESHOLD: f32 = 2.0;
+@@ -12,10 +14,55 @@ const RETESSELLATION_CACHE_SIZE: usize = 4;
+ 
+ #[derive(Clone, Debug)]
+ pub(crate) struct TessellationCache {
+-    entries: [Option<(f32, ShapeHandle)>; RETESSELLATION_CACHE_SIZE],
++    /// (scale, handle, AQW build: when it was last drawn, see `clock`)
++    entries: [Option<(f32, ShapeHandle, u32)>; RETESSELLATION_CACHE_SIZE],
+     len: usize,
+ }
+ 
++thread_local! {
++    /// AQW build: seconds since the player started, as of the last render (see `set_clock`).
++    static CLOCK: Cell<u32> = const { Cell::new(0) };
++    /// AQW build: every shared tessellation cache, for `evict_unused`.
++    static REGISTRY: RefCell<Vec<Weak<RefCell<TessellationCache>>>> =
++        const { RefCell::new(Vec::new()) };
++    /// Registry length at which dead entries are next removed (see `new_shared`).
++    static NEXT_PRUNE: Cell<usize> = const { Cell::new(4096) };
++}
++
++/// AQW build: sets the clock shapes are stamped with when drawn (called every render).
++pub(crate) fn set_clock(secs: u32) {
++    CLOCK.with(|c| c.set(secs));
++}
++
++fn clock() -> u32 {
++    CLOCK.with(Cell::get)
++}
++
++/// AQW build: frees the tessellations (GPU geometry) of shapes not drawn in the last
++/// `unused_secs` seconds; a shape drawn again later is tessellated again. AQW keeps every
++/// gear SWF it ever loaded, so a long session (AFK in a busy town, players coming and going)
++/// kept growing ~500 MB of shape geometry an hour, until a 4 GB card ran out (players arriving
++/// drawn without their gear). Only used while the GPU's memory is nearly full. Returns how many
++/// tessellations were freed.
++pub fn evict_unused(unused_secs: u32) -> usize {
++    let cutoff = clock().saturating_sub(unused_secs);
++    REGISTRY.with(|registry| {
++        let mut registry = registry.borrow_mut();
++        let mut freed = 0;
++        registry.retain(|cache| {
++            let Some(cache) = cache.upgrade() else {
++                return false;
++            };
++            // A cache in use right now (it can't be, between frames) is just skipped.
++            if let Ok(mut cache) = cache.try_borrow_mut() {
++                freed += cache.evict_older_than(cutoff);
++            }
++            true
++        });
++        freed
++    })
++}
++
+ /// A cache for tessellated shapes at different scales, using a simple LRU eviction policy.
+ /// (LRU index: 0, MRU index: len - 1)
+ ///
+@@ -32,6 +79,39 @@ impl TessellationCache {
+         }
      }
  
++    /// AQW build: a new, empty cache to share, registered for `evict_unused`.
++    pub(crate) fn new_shared() -> Rc<RefCell<Self>> {
++        let cache = Rc::new(RefCell::new(Self::new()));
++        REGISTRY.with(|registry| {
++            let mut registry = registry.borrow_mut();
++            // Dead entries keep their (small) allocation; drop them now and then, so scripts
++            // creating many `Shape`s over hours don't pile them up.
++            if registry.len() >= NEXT_PRUNE.with(Cell::get) {
++                registry.retain(|cache| cache.strong_count() > 0);
++                NEXT_PRUNE.with(|next| next.set((registry.len() * 2).max(4096)));
++            }
++            registry.push(Rc::downgrade(&cache));
++        });
++        cache
++    }
++
++    /// AQW build: drops the entries last drawn before `cutoff`; returns how many.
++    fn evict_older_than(&mut self, cutoff: u32) -> usize {
++        let mut kept = 0;
++        for i in 0..self.len {
++            let entry = self.entries[i].take();
++            if let Some(entry) = entry
++                && entry.2 >= cutoff
++            {
++                self.entries[kept] = Some(entry);
++                kept += 1;
++            }
++        }
++        let evicted = self.len - kept;
++        self.len = kept;
++        evicted
++    }
++
+     /// Finds the cached shape handle with the closest scale to the target scale.
+     ///
+     /// If the closest scale is NOT within the retessellation threshold,
+@@ -41,7 +121,7 @@ impl TessellationCache {
+         let mut best_deviation = f32::INFINITY;
+ 
+         for (index, entry) in self.entries[..self.len].iter().enumerate() {
+-            if let Some((cached_scale, _)) = entry {
++            if let Some((cached_scale, _, _)) = entry {
+                 let ratio = f32::abs(target_scale / cached_scale);
+ 
+                 // Check if the cached scale is within the retessellation threshold of the target scale.
+@@ -70,7 +150,7 @@ impl TessellationCache {
+     pub(crate) fn insert(&mut self, scale: f32, handle: ShapeHandle) {
+         if self.len < RETESSELLATION_CACHE_SIZE {
+             // If the cache is not full, simply add the new entry at the end.
+-            self.entries[self.len] = Some((scale, handle));
++            self.entries[self.len] = Some((scale, handle, clock()));
+             self.len += 1;
+             return;
+         }
+@@ -80,7 +160,34 @@ impl TessellationCache {
+             self.entries[i - 1] = self.entries[i].take();
+         }
+ 
+-        self.entries[self.len - 1] = Some((scale, handle));
++        self.entries[self.len - 1] = Some((scale, handle, clock()));
++    }
++
 +    /// AQW build: swaps the entry holding `old` (compared by identity) for `new`, keeping its
 +    /// scale and position; with `None` the entry is removed. Used to fill in a deferred
 +    /// tessellation (see `graphic::deferred_shapes`).
@@ -4162,13 +4935,13 @@ index cacd85384..49ca11e7f 100644
 +        let Some(index) = self.entries[..self.len].iter().position(|entry| {
 +            entry
 +                .as_ref()
-+                .is_some_and(|(_, handle)| std::sync::Arc::ptr_eq(&handle.0, &old.0))
++                .is_some_and(|(_, handle, _)| std::sync::Arc::ptr_eq(&handle.0, &old.0))
 +        }) else {
 +            return;
 +        };
 +        match new {
 +            Some(new) => {
-+                if let Some((_, handle)) = &mut self.entries[index] {
++                if let Some((_, handle, _)) = &mut self.entries[index] {
 +                    *handle = new;
 +                }
 +            }
@@ -4180,13 +4953,21 @@ index cacd85384..49ca11e7f 100644
 +                self.len -= 1;
 +            }
 +        }
-+    }
-+
+     }
+ 
      /// Returns the number of cached entries currently stored in the cache.
-     pub(crate) fn len(&self) -> usize {
-         self.len
+@@ -90,6 +197,9 @@ impl TessellationCache {
+ 
+     /// Moves the entry at the given index to the most recently used position and returns its shape handle.
+     fn touch_entry(&mut self, index: usize) -> ShapeHandle {
++        if let Some(entry) = &mut self.entries[index] {
++            entry.2 = clock();
++        }
+         if index == self.len - 1 {
+             // The entry is already the most recently used, so we can return its handle directly.
+             return self.entries[index]
 diff --git a/desktop/Cargo.toml b/desktop/Cargo.toml
-index 37faf2570..585346534 100644
+index 37faf2570..cd1514aa5 100644
 --- a/desktop/Cargo.toml
 +++ b/desktop/Cargo.toml
 @@ -12,6 +12,10 @@ workspace = true
@@ -4236,8 +5017,8 @@ index 37faf2570..585346534 100644
 +CompanyName = "Mugetsu"
 +LegalCopyright = "Mugetsu; based on Ruffle, Copyright © 2018 Ruffle LLC and Ruffle contributors"
 +# Keep equal to `mugetsu::VERSION` (desktop/src/mugetsu.rs).
-+ProductVersion = "1.3.1"
-+FileVersion = "1.3.1 (Ruffle 0.7.0-nightly.2026.10.2)"
++ProductVersion = "1.4.0"
++FileVersion = "1.4.0 (Ruffle 0.7.0-nightly.2026.10.2)"
  # InternalName should be the same as the module name
  InternalName = "ruffle_desktop"
 -OriginalFilename = "ruffle.exe"
@@ -5964,7 +6745,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index a3410740e..f464a6884 100644
+index a3410740e..6b65b0006 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
 @@ -15,7 +15,7 @@ use ruffle_core::swf::HeaderExt;
@@ -5988,7 +6769,7 @@ index a3410740e..f464a6884 100644
      modifiers: Modifiers,
      min_window_size: LogicalSize<u32>,
      max_window_size: PhysicalSize<u32>,
-@@ -43,6 +48,214 @@ struct MainWindow {
+@@ -43,6 +48,318 @@ struct MainWindow {
      time: Instant,
      next_frame_time: Option<Instant>,
      event_loop_proxy: EventLoopProxy<RuffleEvent>,
@@ -5996,6 +6777,23 @@ index a3410740e..f464a6884 100644
 +    /// A SWF frame ran since the last draw; see `check_redraw`.
 +    frame_since_render: bool,
 +    last_redraw: Instant,
++    /// With frame interpolation on: when the next in-between draw is due (see `pace_interpolation`).
++    next_draw_time: Option<Instant>,
++    /// When the last draw started.
++    draw_started: Instant,
++    /// Recent averages of a draw's and a SWF frame's time on the main thread (ms).
++    draw_cost_ms: f64,
++    frame_cost_ms: f64,
++    /// Draw a new picture on every n-th refresh of the monitor.
++    draw_divisor: u32,
++    /// While interpolating: when the last new picture was due (see `pace_interpolation`).
++    picture_due: Instant,
++    /// Since when `draw_divisor` would have gone up / down (it changes only if that lasts).
++    divisor_up_since: Option<Instant>,
++    divisor_down_since: Option<Instant>,
++    /// The monitor's refresh interval, and when it was last looked up.
++    refresh_interval: Duration,
++    refresh_checked: Option<Instant>,
 +}
 +
 +/// Logs frame cost and pacing every few seconds (target `ruffle_aqw_perf`), for comparing builds.
@@ -6024,6 +6822,8 @@ index a3410740e..f464a6884 100644
 +    walk_at: Option<u64>,
 +    /// Drawn frames per second of the last logged window.
 +    last_drawn_fps: f64,
++    /// With frame interpolation on: the draws per second aimed for.
++    interpolation_rate: f64,
 +}
 +
 +impl PerfStats {
@@ -6076,9 +6876,21 @@ index a3410740e..f464a6884 100644
 +            let [a, b, c, d, e, f, g] = &mut zero;
 +            libmimalloc_sys::mi_process_info(a, b, c, d, e, &mut commit, f, g);
 +        }
++        // AQW build: what Windows counts against the graphics chip's memory (see
++        // `mugetsu::video_memory`).
++        let video_memory = crate::mugetsu::video_memory()
++            .map(|(budget, usage)| {
++                format!(
++                    "video memory {} / {} MB budget (transient textures apart: {}); ",
++                    usage >> 20,
++                    budget >> 20,
++                    if ruffle_render_wgpu::transient_textures_enabled() { "on" } else { "off" }
++                )
++            })
++            .unwrap_or_default();
 +        tracing::info!(
 +            target: "ruffle_aqw_perf",
-+            "memory: {}; {renderer_report}; process commit {} MB, rust heap {} MB, wgpu: {encoder_backlog} encoders waiting to drop, {in_flight} submissions in flight",
++            "memory: {video_memory}{}; {renderer_report}; process commit {} MB, rust heap {} MB, wgpu: {encoder_backlog} encoders waiting to drop, {in_flight} submissions in flight",
 +            player.aqw_memory_report(),
 +            commit / (1 << 20),
 +            crate::HEAP_BYTES.load(std::sync::atomic::Ordering::Relaxed) / (1 << 20),
@@ -6168,11 +6980,16 @@ index a3410740e..f464a6884 100644
 +        ruffle_render_wgpu::set_cache_batch_enabled(!crate::mugetsu::exe_flag("no-glow-batch"));
 +        tracing::info!(
 +            target: "ruffle_aqw_perf",
-+            "render time per drawn frame (ms): build_commands {:.2}, {parts}; atlas {}; cache steps {}; glow batch {}",
++            "render time per drawn frame (ms): build_commands {:.2}, {parts}; atlas {}; cache steps {}; glow batch {}; interpolation {}",
 +            avg((ruffle_core::render_walk_micros() - walk_at) as f64 / 1000.0, self.renders),
 +            if atlas_was_on { "on" } else { "off" },
 +            if steps_were_on { "on" } else { "off" },
-+            if batch_was_on { "on" } else { "off" }
++            if batch_was_on { "on" } else { "off" },
++            if ruffle_core::frame_interpolation::enabled() {
++                format!("on, aiming for {:.0}/s", self.interpolation_rate)
++            } else {
++                "off".to_string()
++            }
 +        );
 +        *self = PerfStats {
 +            window_start: Some(now),
@@ -6182,9 +6999,77 @@ index a3410740e..f464a6884 100644
 +            timers_at: Some(timers_now),
 +            walk_at: Some(ruffle_core::render_walk_micros()),
 +            last_drawn_fps: self.renders as f64 / secs,
++            interpolation_rate: self.interpolation_rate,
 +            ..Default::default()
 +        };
 +        true
++    }
++}
++
++/// AQW build: when Mugetsu uses most of the graphics memory Windows allows it (85%), it frees
++/// its spare textures and keeps far fewer from then on, until usage has stayed under 65% for a
++/// minute (going back sooner refilled the spares within seconds and needed freeing again: each
++/// round made the spares be recreated, costing hitches). Past the budget, Windows moves
++/// graphics memory to system RAM (2-3 FPS on a 4 GB card after a long session), and Vulkan runs
++/// out of memory instead (gear of players arriving not drawn). Checked every 5 s; does nothing
++/// while there's room, so big cards are unaffected.
++fn memory_watch(player: &mut ruffle_core::Player) {
++    struct Watch {
++        pressure: bool,
++        low_since: Option<Instant>,
++        last_log: Option<Instant>,
++    }
++    static WATCH: std::sync::Mutex<Watch> = std::sync::Mutex::new(Watch {
++        pressure: false,
++        low_since: None,
++        last_log: None,
++    });
++    let Some((budget, usage)) = crate::mugetsu::video_memory() else {
++        return;
++    };
++    let budget = crate::mugetsu::test_video_budget().map_or(budget, |test| test.min(budget));
++    let mut watch = WATCH.lock().unwrap_or_else(|e| e.into_inner());
++    if usage > budget / 100 * 85 {
++        // Shapes not drawn for 2 minutes (gear of players who left, other maps) are
++        // tessellated again if they come back.
++        let shapes = ruffle_core::evict_unused_shapes(120);
++        if let Some(renderer) = <dyn std::any::Any>::downcast_mut::<
++            ruffle_render_wgpu::backend::WgpuRenderBackend<crate::gui::MovieView>,
++        >(player.renderer_mut())
++        {
++            renderer.aqw_trim_memory();
++        }
++        ruffle_render_wgpu::set_memory_pressure(true);
++        let was = std::mem::replace(&mut watch.pressure, true);
++        watch.low_since = None;
++        if !was || watch.last_log.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
++            watch.last_log = Some(Instant::now());
++            let after = crate::mugetsu::video_memory().map_or(0, |(_, usage)| usage);
++            tracing::info!(
++                target: "ruffle_aqw_perf",
++                "graphics memory nearly full: {} of {} MB; freed spare textures and {shapes} unused shapes, now {} MB",
++                usage >> 20,
++                budget >> 20,
++                after >> 20
++            );
++        }
++    } else if watch.pressure {
++        if usage < budget / 100 * 65 {
++            let low_since = *watch.low_since.get_or_insert_with(Instant::now);
++            if low_since.elapsed() >= Duration::from_secs(60) {
++                watch.pressure = false;
++                watch.low_since = None;
++                ruffle_render_wgpu::set_memory_pressure(false);
++                tracing::info!(
++                    target: "ruffle_aqw_perf",
++                    "graphics memory back to normal: {} of {} MB",
++                    usage >> 20,
++                    budget >> 20
++                );
++            }
++        } else {
++            watch.low_since = None;
++        }
 +    }
 +}
 +
@@ -6203,7 +7088,7 @@ index a3410740e..f464a6884 100644
  }
  
  impl MainWindow {
-@@ -52,13 +265,46 @@ impl MainWindow {
+@@ -52,13 +369,69 @@ impl MainWindow {
              // surface also keeps the size it had before, as `GuiController::resize`
              // refuses to reconfigure it to a zero size.
              if !self.minimized && !self.occluded {
@@ -6221,7 +7106,25 @@ index a3410740e..f464a6884 100644
 +                    // frame, so only re-render it when a new SWF frame ran (or it was resized).
                      // Even if the movie is paused, user interaction with debug tools can change the render output
 -                    player.render();
-+                    if self.frame_since_render || !player.is_playing() || extra_renders_enabled() {
++                    // With frame interpolation on, a new in-between picture goes out on the
++                    // first refresh after it's due, every n refreshes' time; the refreshes in
++                    // between show the last one again (see `pace_interpolation`). Timed, not
++                    // counted: a long draw (e.g. 11 ms in Yulgar) makes presents miss refreshes.
++                    let interpolating = self.next_draw_time.is_some();
++                    let new_picture_due = if interpolating {
++                        let interval = self.refresh_interval * self.draw_divisor;
++                        let due = self.picture_due + interval;
++                        if started + self.refresh_interval / 2 >= due {
++                            // Keep the rhythm, unless it fell more than a picture behind.
++                            self.picture_due = if started < due + interval { due } else { started };
++                            true
++                        } else {
++                            false
++                        }
++                    } else {
++                        self.frame_since_render
++                    };
++                    if new_picture_due || !player.is_playing() || extra_renders_enabled() {
 +                        player.render();
 +                        rendered_movie = true;
 +                    }
@@ -6232,8 +7135,13 @@ index a3410740e..f464a6884 100644
 +                self.perf.presents += 1;
 +                self.frame_since_render = false;
 +                self.last_redraw = Instant::now();
++                self.draw_started = started;
 +                if rendered_movie {
 +                    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
++                    // Drawing the movie only (presenting can include waiting for the refresh);
++                    // one-off slow draws, e.g. of new shapes, count at most 3x the average.
++                    let cost = movie_ms.min(self.draw_cost_ms * 3.0);
++                    self.draw_cost_ms = self.draw_cost_ms * 0.9 + cost * 0.1;
 +                    self.perf.render(total_ms);
 +                    // AQW build: say what a slow render (longer than 1.2 frames) spent its
 +                    // time on.
@@ -6251,7 +7159,7 @@ index a3410740e..f464a6884 100644
              }
  
              // Important that we return here, or we'll get a feedback loop with egui
-@@ -75,6 +321,8 @@ impl MainWindow {
+@@ -75,6 +448,8 @@ impl MainWindow {
                  event_loop.exit();
              }
              WindowEvent::Resized(size) => {
@@ -6260,7 +7168,7 @@ index a3410740e..f464a6884 100644
                  // How minimizing shows up on Windows; winit still has no
                  // `WindowEvent::Minimize`. (`Window::is_minimized` does exist by
                  // now, but it has to be polled, and it wouldn't tell us anything
-@@ -115,10 +363,11 @@ impl MainWindow {
+@@ -115,10 +490,11 @@ impl MainWindow {
                  }
  
                  self.mouse_pos = position;
@@ -6276,7 +7184,7 @@ index a3410740e..f464a6884 100644
              }
              WindowEvent::DroppedFile(file) => {
                  if let Some(content_descriptor) = ContentDescriptor::new_local(&file, None) {
-@@ -140,6 +389,9 @@ impl MainWindow {
+@@ -140,6 +516,9 @@ impl MainWindow {
                      return;
                  }
  
@@ -6286,7 +7194,7 @@ index a3410740e..f464a6884 100644
                  use ruffle_core::events::MouseButton as RuffleMouseButton;
                  use winit::event::MouseButton;
                  let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
-@@ -203,6 +455,7 @@ impl MainWindow {
+@@ -203,6 +582,7 @@ impl MainWindow {
                  }
              }
              WindowEvent::CursorLeft { .. } => {
@@ -6294,7 +7202,7 @@ index a3410740e..f464a6884 100644
                  if let Some(mut player) = self.player.get() {
                      player.set_mouse_in_stage(false);
                  }
-@@ -389,11 +642,44 @@ impl MainWindow {
+@@ -389,21 +769,171 @@ impl MainWindow {
          // We should look at changing our tick to happen somewhere else if we see any behavioural problems.
          if matches!(self.loaded, LoadingState::Loaded) {
              let new_time = Instant::now();
@@ -6308,6 +7216,7 @@ index a3410740e..f464a6884 100644
                  self.time = new_time;
 +                let perf = &mut self.perf;
 +                let frame_since_render = &mut self.frame_since_render;
++                let frame_cost_ms = &mut self.frame_cost_ms;
                  self.next_frame_time = self.player.get().map(|mut player| {
 +                    let frames_before = player.frames_run();
 +                    let timers_before = ruffle_render_wgpu::perf_counters::timers::snapshot();
@@ -6315,6 +7224,7 @@ index a3410740e..f464a6884 100644
 +                    if player.frames_run() != frames_before {
 +                        *frame_since_render = true;
 +                        let frame_ms = new_time.elapsed().as_secs_f64() * 1000.0;
++                        *frame_cost_ms = *frame_cost_ms * 0.9 + frame_ms * 0.1;
 +                        // AQW build: say what a slow frame (scripts etc., longer than 1.2
 +                        // frames) spent its time on, e.g. when a crowded room loads.
 +                        if frame_ms > 1.2 * 1000.0 / player.frame_rate() {
@@ -6333,16 +7243,104 @@ index a3410740e..f464a6884 100644
 +                        );
 +                    }
 +                    if perf.maybe_log(new_time) {
++                        memory_watch(&mut player);
 +                        perf.log_object_counts(&mut player);
 +                        crate::mugetsu::low_quality_tick(&mut player, perf.last_drawn_fps);
 +                    }
                      new_time + player.time_til_next_frame()
                  });
                  self.check_redraw();
-@@ -401,9 +687,36 @@ impl MainWindow {
+             }
++            self.pace_interpolation();
          }
      }
  
++    /// AQW build: with frame interpolation on (title-bar menu), sends a picture on every refresh
++    /// of the monitor: vsync makes each one wait for its refresh, which paces this exactly (a
++    /// timer is ~1-2 ms late, a lot at 360 Hz). A new in-between picture is drawn on every n-th
++    /// of them, the most the main thread can afford, so each stays up the same time; the others
++    /// show the last one again, which costs little. Needs at least 1.5 new pictures per SWF
++    /// frame, else it draws once per frame as without interpolation.
++    fn pace_interpolation(&mut self) {
++        self.next_draw_time = None;
++        if !ruffle_core::frame_interpolation::enabled() || self.minimized || self.occluded {
++            return;
++        }
++        let now = Instant::now();
++        if self
++            .refresh_checked
++            .is_none_or(|checked| now.duration_since(checked) > Duration::from_secs(2))
++        {
++            let first = self.refresh_checked.is_none();
++            self.refresh_checked = Some(now);
++            let millihertz = self
++                .gui
++                .window()
++                .current_monitor()
++                .and_then(|monitor| monitor.refresh_rate_millihertz())
++                .unwrap_or(60_000)
++                .clamp(24_000, 360_000);
++            let interval = Duration::from_secs_f64(1000.0 / millihertz as f64);
++            if interval != self.refresh_interval || first {
++                tracing::info!(
++                    target: "ruffle_aqw_perf",
++                    "frame interpolation: monitor refreshes at {:.1} Hz",
++                    millihertz as f64 / 1000.0
++                );
++            }
++            self.refresh_interval = interval;
++        }
++        let frame_rate = match self.player.get() {
++            Some(player) if player.is_playing() => player.frame_rate(),
++            _ => return,
++        };
++        // Draw on every refresh if the main thread can afford it (keeping a third of its time
++        // spare), else on every 2nd, 3rd, ... refresh: an even rate looks smoother than an
++        // uneven higher one. Each change of rate is a visible change of rhythm, so it only steps
++        // to fewer pictures after needing to for half a second, and back to more after 3 seconds
++        // of clearly affording it.
++        let refresh_hz = 1.0 / self.refresh_interval.as_secs_f64();
++        let spare_ms = (650.0 - self.frame_cost_ms * frame_rate).max(100.0);
++        let divisor_for = |cost_ms: f64| {
++            (refresh_hz * cost_ms.max(0.5) / spare_ms).ceil().clamp(1.0, 16.0) as u32
++        };
++        let needed = divisor_for(self.draw_cost_ms);
++        let lasted = |since: &mut Option<Instant>, wanted: bool, secs: f64| {
++            if !wanted {
++                *since = None;
++                return false;
++            }
++            now.duration_since(*since.get_or_insert(now)).as_secs_f64() >= secs
++        };
++        if lasted(&mut self.divisor_up_since, needed > self.draw_divisor, 0.5)
++            || lasted(
++                &mut self.divisor_down_since,
++                divisor_for(self.draw_cost_ms * 1.3) < self.draw_divisor,
++                3.0,
++            )
++        {
++            self.draw_divisor = needed;
++            self.divisor_up_since = None;
++            self.divisor_down_since = None;
++        }
++        let interval = self.refresh_interval * self.draw_divisor;
++        self.perf.interpolation_rate = refresh_hz / self.draw_divisor as f64;
++        if interval.as_secs_f64() * 1.5 > 1.0 / frame_rate {
++            // Not even 1.5 draws per SWF frame: draw once per frame, as without interpolation.
++            return;
++        }
++        // Requested right away, keeping the screen's queue of pictures full so a busy moment on
++        // the main thread doesn't miss a refresh; presenting waits for vsync. The timer only
++        // limits this if presenting doesn't wait.
++        let early = self.refresh_interval / 2;
++        let mut due = self.draw_started + early;
++        if now >= due {
++            self.gui.window().request_redraw();
++            due = now + early;
++        }
++        self.next_draw_time = Some(due);
++    }
++
 +    fn flush_mouse_move(&mut self) {
 +        if !std::mem::take(&mut self.mouse_move_pending) {
 +            return;
@@ -6377,7 +7375,7 @@ index a3410740e..f464a6884 100644
              self.gui.window().request_redraw();
          }
      }
-@@ -429,6 +742,9 @@ macro_rules! enter_runtime {
+@@ -429,6 +959,9 @@ macro_rules! enter_runtime {
  impl App {
      pub fn new(preferences: GlobalPreferences) -> Result<(Self, EventLoop<RuffleEvent>), Error> {
          let event_loop = EventLoop::with_user_event().build()?;
@@ -6387,7 +7385,7 @@ index a3410740e..f464a6884 100644
  
          let mut font_database = fontdb::Database::default();
          font_database.load_system_fonts();
-@@ -461,9 +777,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -461,9 +994,10 @@ impl ApplicationHandler<RuffleEvent> for App {
  
          if cause == StartCause::Init {
              let movie_url = self.preferences.cli.movie_url.clone();
@@ -6400,7 +7398,7 @@ index a3410740e..f464a6884 100644
  
              let no_gui = self.preferences.cli.no_gui;
              let min_window_size = if no_gui {
-@@ -479,7 +796,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -479,7 +1013,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
              let mut window_attributes = WindowAttributes::default()
                  .with_visible(false)
@@ -6409,7 +7407,7 @@ index a3410740e..f464a6884 100644
                  .with_window_icon(Some(icon))
                  .with_min_inner_size(min_window_size);
  
-@@ -560,10 +877,14 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -560,10 +1094,24 @@ impl ApplicationHandler<RuffleEvent> for App {
                  minimized: false,
                  occluded: false,
                  mouse_pos: PhysicalPosition::new(0.0, 0.0),
@@ -6421,10 +7419,20 @@ index a3410740e..f464a6884 100644
 +                perf: PerfStats::default(),
 +                frame_since_render: true,
 +                last_redraw: Instant::now(),
++                next_draw_time: None,
++                draw_started: Instant::now(),
++                draw_cost_ms: 2.0,
++                frame_cost_ms: 3.0,
++                draw_divisor: 1,
++                picture_due: Instant::now(),
++                divisor_up_since: None,
++                divisor_down_since: None,
++                refresh_interval: Duration::from_secs_f64(1.0 / 60.0),
++                refresh_checked: None,
              });
          }
      }
-@@ -619,7 +940,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -619,7 +1167,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              }
  
              (Some(main_window), RuffleEvent::CloseFile) => {
@@ -6433,7 +7441,22 @@ index a3410740e..f464a6884 100644
                  main_window.gui.close_movie(&mut main_window.player);
              }
  
-@@ -729,3 +1050,17 @@ enum LoadingState {
+@@ -702,8 +1250,12 @@ impl ApplicationHandler<RuffleEvent> for App {
+             // only place where we're setting control flow, and events cancel wait.
+             // Note: the control flow might be set to `ControlFlow::WaitUntil` with a
+             // timestamp in the past! Take that into consideration when changing this code.
+-            if let Some(next_frame_time) = main_window.next_frame_time {
+-                event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_time));
++            let wake = match (main_window.next_frame_time, main_window.next_draw_time) {
++                (Some(frame), Some(draw)) => Some(frame.min(draw)),
++                (frame, draw) => frame.or(draw),
++            };
++            if let Some(wake) = wake {
++                event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+             }
+         }
+     }
+@@ -729,3 +1281,17 @@ enum LoadingState {
      WaitingForResize,
      Loaded,
  }
@@ -6621,7 +7644,7 @@ index e04fa1222..f928b87dd 100644
      match &face.source {
          fontdb::Source::File(path) => load_font_from_file(
 diff --git a/desktop/src/gui/controller.rs b/desktop/src/gui/controller.rs
-index 2383b2dde..d200c0ae8 100644
+index 2383b2dde..a3ce25965 100644
 --- a/desktop/src/gui/controller.rs
 +++ b/desktop/src/gui/controller.rs
 @@ -47,6 +47,9 @@ pub struct GuiController {
@@ -6650,7 +7673,22 @@ index 2383b2dde..d200c0ae8 100644
          let surface = instance.create_surface(window.clone())?;
          let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
              backend,
-@@ -78,6 +86,20 @@ impl GuiController {
+@@ -72,12 +80,35 @@ impl GuiController {
+         ))
+         .map_err(|e| anyhow!(e.to_string()))?;
+         let adapter_info = adapter.get_info();
++        crate::mugetsu::set_adapter_ids(adapter_info.vendor, adapter_info.device);
++        // Which drawing speed-ups are switched off (for test logs).
++        let off = crate::mugetsu::drawing_switches_off();
++        if !off.is_empty() {
++            tracing::info!("Drawing speed-ups switched off: {off:?}");
++        }
++        ruffle_render_wgpu::set_transient_textures_enabled(
++            !crate::mugetsu::exe_flag("no-transient-memory"),
++        );
+         tracing::info!(
+             "Using graphics API {} on {} (type: {:?})",
+             adapter_info.backend.to_str(),
              adapter_info.name,
              adapter_info.device_type
          );
@@ -6671,7 +7709,7 @@ index 2383b2dde..d200c0ae8 100644
          let preferred_formats = [
              // by egui
              wgpu::TextureFormat::Rgba8Unorm,
-@@ -177,6 +199,7 @@ impl GuiController {
+@@ -177,6 +208,7 @@ impl GuiController {
              movie_view_renderer,
              size,
              no_gui,
@@ -6679,7 +7717,7 @@ index 2383b2dde..d200c0ae8 100644
              theme_controller,
              #[cfg(feature = "tracy_images")]
              tracy_frame_captures,
-@@ -254,7 +277,11 @@ impl GuiController {
+@@ -254,7 +286,11 @@ impl GuiController {
          }
  
          let response = self.egui_winit.on_window_event(&self.window, event);
@@ -6692,7 +7730,7 @@ index 2383b2dde..d200c0ae8 100644
              self.window.request_redraw();
          }
          response.consumed
-@@ -379,6 +406,7 @@ impl GuiController {
+@@ -379,6 +415,7 @@ impl GuiController {
                  },
              );
          });
@@ -6700,7 +7738,7 @@ index 2383b2dde..d200c0ae8 100644
          self.repaint_after = full_output
              .viewport_output
              .get(&ViewportId::ROOT)
-@@ -489,6 +517,7 @@ impl GuiController {
+@@ -489,6 +526,7 @@ impl GuiController {
  
          self.window.pre_present_notify();
          self.descriptors.queue.present(surface_texture);
@@ -6708,7 +7746,7 @@ index 2383b2dde..d200c0ae8 100644
          #[cfg(feature = "tracy")]
          tracing_tracy::client::frame_mark();
          #[cfg(feature = "tracy_images")]
-@@ -501,12 +530,18 @@ impl GuiController {
+@@ -501,12 +539,18 @@ impl GuiController {
          close_event: PlayerEvent,
      ) {
          self.gui.show_context_menu(menu, close_event);
@@ -6727,7 +7765,7 @@ index 2383b2dde..d200c0ae8 100644
      pub fn needs_render(&self) -> bool {
          Instant::now().duration_since(self.last_update) >= self.repaint_after
      }
-@@ -517,6 +552,7 @@ impl GuiController {
+@@ -517,6 +561,7 @@ impl GuiController {
  
      pub fn open_dialog(&mut self, dialog_event: DialogDescriptor) {
          self.gui.dialogs.open_dialog(dialog_event);
@@ -6735,7 +7773,7 @@ index 2383b2dde..d200c0ae8 100644
      }
  
      pub fn set_ime_allowed(&self, allowed: bool) {
-@@ -572,7 +608,14 @@ fn select_wgpu_backend(
+@@ -572,7 +617,14 @@ fn select_wgpu_backend(
          format_list(&get_backend_names(preferred_backends), "or")
      );
  
@@ -6751,7 +7789,7 @@ index 2383b2dde..d200c0ae8 100644
          if let Some(instance) = try_wgpu_backend(backend, window.clone()) {
              tracing::info!(
                  "Using fallback backend {}",
-@@ -785,3 +828,54 @@ fn mmap_system_font(path: &Path) -> anyhow::Result<memmap2::Mmap> {
+@@ -785,3 +837,54 @@ fn mmap_system_font(path: &Path) -> anyhow::Result<memmap2::Mmap> {
      let mmap = mmap.map_err(|e| anyhow!("Failed to mmap font file at {path:?}: {e}"))?;
      Ok(mmap)
  }
@@ -6807,7 +7845,7 @@ index 2383b2dde..d200c0ae8 100644
 +    });
 +}
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 2265dc24c..a21fe06a7 100644
+index 2265dc24c..8fa595a42 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
 @@ -13,6 +13,7 @@ mod custom_event;
@@ -6945,7 +7983,7 @@ index 2265dc24c..a21fe06a7 100644
  fn panic_hook(info: &PanicHookInfo) {
      CALLSTACK.with(|callstack| {
          if let Some(callstack) = &*callstack.borrow() {
-@@ -85,60 +148,115 @@ fn panic_hook(info: &PanicHookInfo) {
+@@ -85,60 +148,117 @@ fn panic_hook(info: &PanicHookInfo) {
  
      let message = info.payload_as_str().unwrap_or("panic occurred");
  
@@ -7052,7 +8090,8 @@ index 2265dc24c..a21fe06a7 100644
 +        return args;
 +    }
 +    mugetsu::set_plays_aqw();
-+    let given = |flag: &str| {
++    ruffle_core::frame_interpolation::set_enabled(mugetsu::saved_interpolation());
++    let given =|flag: &str| {
 +        args.iter().skip(1).any(|a| {
 +            a.to_str()
 +                .is_some_and(|a| a == flag || a.starts_with(&format!("{flag}=")))
@@ -7064,6 +8103,7 @@ index 2265dc24c..a21fe06a7 100644
 +    let low_power = args.windows(2).any(|pair| {
 +        (is(&pair[0], "--power") || is(&pair[0], "-p")) && is(&pair[1], "low")
 +    }) || args.iter().any(|a| is(a, "--power=low"));
++    mugetsu::apply_drawing_switches();
 +    let graphics = if given("--graphics") || given("-g") {
 +        "vulkan" // unused: the given option wins
 +    } else if let Some(chosen) = mugetsu::saved_graphics() {
@@ -7111,7 +8151,7 @@ index 2265dc24c..a21fe06a7 100644
  }
  
  fn main() -> Result<(), Error> {
-@@ -147,11 +265,19 @@ fn main() -> Result<(), Error> {
+@@ -147,11 +267,19 @@ fn main() -> Result<(), Error> {
          prev_hook(info);
          panic_hook(info);
      }));
@@ -7132,7 +8172,7 @@ index 2265dc24c..a21fe06a7 100644
  
      #[cfg(feature = "shell-completions")]
      if let Some(shell) = opt.completions {
-@@ -176,11 +302,19 @@ fn main() -> Result<(), Error> {
+@@ -176,11 +304,19 @@ fn main() -> Result<(), Error> {
      let (non_blocking_file, _file_guard) = tracing_appender::non_blocking(File::create(log_path)?);
      let (non_blocking_stdout, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
  
@@ -7157,7 +8197,7 @@ index 2265dc24c..a21fe06a7 100644
  
      let subscriber = tracing_subscriber::registry()
          .with(env_filter)
-@@ -195,6 +329,23 @@ fn main() -> Result<(), Error> {
+@@ -195,6 +331,23 @@ fn main() -> Result<(), Error> {
  
      subscriber.init();
  
@@ -7183,10 +8223,10 @@ index 2265dc24c..a21fe06a7 100644
      });
 diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
 new file mode 100644
-index 000000000..41f8e0866
+index 000000000..6a0ebe3a2
 --- /dev/null
 +++ b/desktop/src/mugetsu.rs
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,653 @@
 +//! AQW build (Mugetsu): things the release player does on its own, without a launcher:
 +//! the window title, remembering that the Vulkan driver crashed on this PC (so the next start
 +//! uses DirectX 12), the "running on the built-in graphics" tip and the new-version notice.
@@ -7199,7 +8239,7 @@ index 000000000..41f8e0866
 +
 +/// Mugetsu's own version. Keep it equal to `ProductVersion` in desktop/Cargo.toml
 +/// ([package.metadata.winresource]) and to the GitHub release tag (`v1.1.1`).
-+pub const VERSION: &str = "1.3.1";
++pub const VERSION: &str = "1.4.0";
 +
 +const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
 +const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
@@ -7233,9 +8273,14 @@ index 000000000..41f8e0866
 +
 +/// A file named `name` next to Mugetsu.exe exists (`verbose-log`, `no-update-check`).
 +pub fn exe_flag(name: &str) -> bool {
++    // Also `name.txt`: Windows hides extensions, so a "new text document" renamed to `name`
++    // is really `name.txt`.
 +    std::env::current_exe()
 +        .ok()
-+        .and_then(|exe| exe.parent().map(|dir| dir.join(name).exists()))
++        .and_then(|exe| {
++            exe.parent()
++                .map(|dir| dir.join(name).exists() || dir.join(format!("{name}.txt")).exists())
++        })
 +        .unwrap_or(false)
 +}
 +
@@ -7362,6 +8407,27 @@ index 000000000..41f8e0866
 +    }
 +}
 +
++/// Frame interpolation (title-bar menu, off by default; see `ruffle_core::frame_interpolation`):
++/// this file exists while it's on.
++const INTERPOLATION_FILE: &str = "mugetsu-interpolation.txt";
++
++pub fn saved_interpolation() -> bool {
++    config_dir().is_some_and(|dir| dir.join(INTERPOLATION_FILE).exists())
++}
++
++pub fn save_interpolation(on: bool) {
++    let Some(dir) = config_dir() else {
++        return;
++    };
++    let path = dir.join(INTERPOLATION_FILE);
++    if on {
++        let _ = std::fs::create_dir_all(&dir);
++        let _ = std::fs::write(path, "on\n");
++    } else {
++        let _ = std::fs::remove_file(path);
++    }
++}
++
 +/// The file the Vulkan driver crashed in on this PC, if that still applies: the same driver
 +/// file (a driver update installs to a new folder, or at least replaces the file). A stale
 +/// record is deleted. Not retried for a new Mugetsu version: the crashes seen so far (Intel
@@ -7393,8 +8459,16 @@ index 000000000..41f8e0866
 +///
 +/// Also Qualcomm graphics (Snapdragon laptops on Windows on ARM): a player's Adreno showed only
 +/// a black window with Vulkan and works with DirectX 12 (2026-10, IdeaPad 5 2-in-1).
-+#[cfg(windows)]
 +pub fn intel_graphics(low_power: bool) -> Option<String> {
++    let (vendor, name) = preferred_adapter(low_power)?;
++    // Intel; Qualcomm reports its PCI id 0x5143 or "QCOM" (0x4D4F4351).
++    matches!(vendor, 0x8086 | 0x5143 | 0x4D4F_4351).then_some(name)
++}
++
++/// The PCI vendor id and name of the graphics chip Windows lists first for high performance
++/// (or low power), skipping software adapters.
++#[cfg(windows)]
++fn preferred_adapter(low_power: bool) -> Option<(u32, String)> {
 +    use windows::Win32::Graphics::Dxgi::{
 +        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
 +        DXGI_GPU_PREFERENCE_MINIMUM_POWER, IDXGIAdapter1, IDXGIFactory6,
@@ -7416,16 +8490,130 @@ index 000000000..41f8e0866
 +            let name = String::from_utf16_lossy(&desc.Description)
 +                .trim_end_matches('\0')
 +                .to_string();
-+            // Intel; Qualcomm reports its PCI id 0x5143 or "QCOM" (0x4D4F4351).
-+            return matches!(desc.VendorId, 0x8086 | 0x5143 | 0x4D4F_4351).then_some(name);
++            return Some((desc.VendorId, name));
 +        }
 +        None
 +    }
 +}
 +
 +#[cfg(not(windows))]
-+pub fn intel_graphics(_low_power: bool) -> Option<String> {
++fn preferred_adapter(_low_power: bool) -> Option<(u32, String)> {
 +    None
++}
++
++// --- Drawing speed-up switches -----------------------------------------------------------
++//
++// On a Snapdragon laptop (Adreno X1-45, DirectX 12) parts of maps went missing (Yulgar's carpet
++// and curtains, stars in the void maps) and lines of quest text flickered away, while the same
++// maps drew fine on other graphics. Mugetsu's own drawing speed-ups are the likely cause, so
++// each can be turned off with a file next to the exe, to find out which (not yet confirmed on
++// Adreno, so nothing is turned off automatically).
++
++/// The speed-ups' switches (environment variables read when they're first used).
++const SAFE_DRAWING: [&str; 5] = [
++    "RUFFLE_NO_SHARED_SHAPES",
++    "RUFFLE_NO_ATLAS",
++    "RUFFLE_NO_CACHE_BATCH",
++    "RUFFLE_NO_PASS_MERGE",
++    "RUFFLE_SLOW_MULTIPLY",
++];
++
++/// Called first thing in `main` (before any other thread exists): a `safe-drawing` file next to
++/// the exe turns all the speed-ups off (Ruffle's plain ways of drawing); `no-shared-shapes`,
++/// `no-pass-merge` and `slow-multiply` turn single ones off (`no-atlas`, `no-glow-batch` and
++/// `no-cache-steps` are checked while running).
++pub fn apply_drawing_switches() {
++    let set = |var: &str| {
++        // SAFETY: called first thing in `main`, before any other thread exists.
++        unsafe { std::env::set_var(var, "1") };
++    };
++    if exe_flag("safe-drawing") {
++        SAFE_DRAWING.iter().copied().for_each(set);
++    }
++    for (file, var) in [
++        ("no-shared-shapes", "RUFFLE_NO_SHARED_SHAPES"),
++        ("no-pass-merge", "RUFFLE_NO_PASS_MERGE"),
++        ("slow-multiply", "RUFFLE_SLOW_MULTIPLY"),
++    ] {
++        if exe_flag(file) {
++            set(var);
++        }
++    }
++}
++
++/// The speed-ups that are switched off, for the log.
++pub fn drawing_switches_off() -> Vec<&'static str> {
++    SAFE_DRAWING
++        .into_iter()
++        .filter(|var| std::env::var_os(var).is_some())
++        .collect()
++}
++
++// --- Graphics memory ------------------------------------------------------------------------
++
++/// The graphics chip Mugetsu draws with (PCI vendor and device id, from wgpu), to find it in
++/// DXGI for `video_memory`.
++static ADAPTER_IDS: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
++
++pub fn set_adapter_ids(vendor: u32, device: u32) {
++    let _ = ADAPTER_IDS.set((vendor, device));
++}
++
++/// How much of the graphics chip's own memory Windows lets this process use, and how much it
++/// uses (bytes), whichever graphics API draws. Windows counts every GPU memory block Mugetsu
++/// holds, used or not; past the budget it moves memory to system RAM, which is very slow.
++#[cfg(windows)]
++pub fn video_memory() -> Option<(u64, u64)> {
++    use windows::Win32::Graphics::Dxgi::{
++        CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
++        IDXGIAdapter1, IDXGIAdapter3, IDXGIFactory1,
++    };
++    use windows::core::Interface as _;
++    thread_local! {
++        // The chip, found once (it's asked every few seconds).
++        static ADAPTER: std::cell::RefCell<Option<IDXGIAdapter3>> =
++            const { std::cell::RefCell::new(None) };
++    }
++    let find = || -> Option<IDXGIAdapter3> {
++        let (vendor, device) = *ADAPTER_IDS.get()?;
++        // SAFETY: plain DXGI queries; every returned interface is reference counted.
++        unsafe {
++            let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
++            for index in 0.. {
++                let adapter: IDXGIAdapter1 = factory.EnumAdapters1(index).ok()?;
++                let desc = adapter.GetDesc1().ok()?;
++                if desc.VendorId == vendor && desc.DeviceId == device {
++                    return adapter.cast().ok();
++                }
++            }
++            None
++        }
++    };
++    ADAPTER.with(|cell| {
++        let mut cell = cell.borrow_mut();
++        if cell.is_none() {
++            *cell = find();
++        }
++        let adapter = cell.as_ref()?;
++        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
++        // SAFETY: a plain query on a live adapter.
++        unsafe { adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info) }
++            .ok()?;
++        Some((info.Budget, info.CurrentUsage))
++    })
++}
++
++#[cfg(not(windows))]
++pub fn video_memory() -> Option<(u64, u64)> {
++    None
++}
++
++/// A smaller graphics memory budget to test the memory watch with on a big card: a file
++/// `test-vram-mb.txt` next to the exe with a number of MB.
++pub fn test_video_budget() -> Option<u64> {
++    let exe = std::env::current_exe().ok()?;
++    let text = std::fs::read_to_string(exe.parent()?.join("test-vram-mb.txt")).ok()?;
++    Some(text.trim().parse::<u64>().ok()? << 20)
 +}
 +
 +// --- "Quality Low" tip on built-in graphics -----------------------------------------------
@@ -7706,10 +8894,10 @@ index 52ebe8377..b37bdd8ad 100644
          SWF_INFO.with(|i| *i.borrow_mut() = Some(readable_name));
  
 diff --git a/desktop/src/windows.rs b/desktop/src/windows.rs
-index a45404172..63aaf82b3 100644
+index a45404172..2db65b443 100644
 --- a/desktop/src/windows.rs
 +++ b/desktop/src/windows.rs
-@@ -56,3 +56,381 @@ impl Drop for Console {
+@@ -56,3 +56,407 @@ impl Drop for Console {
          }
      }
  }
@@ -7990,15 +9178,16 @@ index a45404172..63aaf82b3 100644
 +    use std::sync::atomic::{AtomicIsize, Ordering};
 +    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 +    use windows_sys::Win32::UI::WindowsAndMessaging::{
-+        AppendMenuW, CallWindowProcW, GWLP_WNDPROC, GetSystemMenu, IDOK, MB_ICONQUESTION,
-+        MB_OKCANCEL, MF_CHECKED, MF_SEPARATOR, MF_STRING, MessageBoxW, SetWindowLongPtrW,
-+        WM_SYSCOMMAND, WNDPROC,
++        AppendMenuW, CallWindowProcW, CheckMenuItem, GWLP_WNDPROC, GetSystemMenu, IDOK,
++        MB_ICONQUESTION, MB_OKCANCEL, MF_BYCOMMAND, MF_CHECKED, MF_SEPARATOR, MF_STRING,
++        MF_UNCHECKED, MessageBoxW, SetWindowLongPtrW, WM_SYSCOMMAND, WNDPROC,
 +    };
 +
 +    // System-menu command ids must keep their low 4 bits clear and stay below 0xF000.
 +    const AUTOMATIC: usize = 0x1000;
 +    const VULKAN: usize = 0x1010;
 +    const DX12: usize = 0x1020;
++    const INTERPOLATION: usize = 0x1030;
 +
 +    static PREVIOUS_PROC: AtomicIsize = AtomicIsize::new(0);
 +
@@ -8029,6 +9218,11 @@ index a45404172..63aaf82b3 100644
 +                let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
 +                AppendMenuW(menu, flags, id, text.as_ptr());
 +            }
++            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
++            let text = wide("Frame interpolation (smoother, for strong PCs)");
++            let checked = ruffle_core::frame_interpolation::enabled();
++            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
++            AppendMenuW(menu, flags, INTERPOLATION, text.as_ptr());
 +            let previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, window_proc as *const () as isize);
 +            PREVIOUS_PROC.store(previous, Ordering::Relaxed);
 +        }
@@ -8041,6 +9235,10 @@ index a45404172..63aaf82b3 100644
 +        lparam: LPARAM,
 +    ) -> LRESULT {
 +        if message == WM_SYSCOMMAND {
++            if wparam & 0xFFF0 == INTERPOLATION {
++                toggle_interpolation(hwnd);
++                return 0;
++            }
 +            let choice = match wparam & 0xFFF0 {
 +                AUTOMATIC => Some(None),
 +                VULKAN => Some(Some(Graphics::Vulkan)),
@@ -8056,6 +9254,22 @@ index a45404172..63aaf82b3 100644
 +        unsafe {
 +            let previous: WNDPROC = std::mem::transmute(PREVIOUS_PROC.load(Ordering::Relaxed));
 +            CallWindowProcW(previous, hwnd, message, wparam, lparam)
++        }
++    }
++
++    /// Frame interpolation switches at once, no restart needed.
++    fn toggle_interpolation(hwnd: HWND) {
++        let on = !ruffle_core::frame_interpolation::enabled();
++        ruffle_core::frame_interpolation::set_enabled(on);
++        mugetsu::save_interpolation(on);
++        tracing::info!("Frame interpolation turned {}", if on { "on" } else { "off" });
++        // SAFETY: `hwnd` is our live window; its system menu exists while it does.
++        unsafe {
++            let menu = GetSystemMenu(hwnd, 0);
++            if !menu.is_null() {
++                let state = if on { MF_CHECKED } else { MF_UNCHECKED };
++                CheckMenuItem(menu, INTERPOLATION as u32, MF_BYCOMMAND | state);
++            }
 +        }
 +    }
 +
@@ -8729,7 +9943,7 @@ index 000000000..723d7c376
 +    }
 +}
 diff --git a/render/wgpu/src/backend.rs b/render/wgpu/src/backend.rs
-index 5dcf43c0a..dd23f32a0 100644
+index 5dcf43c0a..31f97db4c 100644
 --- a/render/wgpu/src/backend.rs
 +++ b/render/wgpu/src/backend.rs
 @@ -60,16 +60,38 @@ pub fn create_wgpu_instance(
@@ -8771,7 +9985,7 @@ index 5dcf43c0a..dd23f32a0 100644
      target: T,
      surface: Surface,
      meshes: Vec<Mesh>,
-@@ -85,6 +107,80 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
+@@ -85,6 +107,106 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
      profiler: GpuProfiler,
  }
  
@@ -8809,12 +10023,38 @@ index 5dcf43c0a..dd23f32a0 100644
 +                    })
 +                    .collect::<Vec<_>>()
 +                    .join(", ");
++                // Blocks by texture kind (each kind has its own allocator): count, used/size.
++                // (An empty block counts as "other".)
++                let mut kinds = [(0u32, 0u64, 0u64); 3];
++                for block in &r.blocks {
++                    let allocations = r.allocations.get(block.allocations.clone()).unwrap_or(&[]);
++                    let kind = match allocations.first().map(|a| a.name.as_str()) {
++                        Some(name) if name.starts_with("Transient") => 0,
++                        Some(name) if name.starts_with("Cached") => 1,
++                        _ => 2,
++                    };
++                    kinds[kind].0 += 1;
++                    kinds[kind].1 += allocations.iter().map(|a| a.size).sum::<u64>();
++                    kinds[kind].2 += block.size;
++                }
++                let kinds = ["pooled", "cached", "other"]
++                    .iter()
++                    .zip(kinds)
++                    .map(|(name, (blocks, used, size))| {
++                        format!(
++                            "{name}: {blocks} blocks, {:.0}/{:.0} MB",
++                            used as f64 / MB,
++                            size as f64 / MB
++                        )
++                    })
++                    .collect::<Vec<_>>()
++                    .join("; ");
 +                format!(
-+                    "{:.0} MB used / {:.0} MB reserved in {} allocations, {} blocks [by label: {top}]",
++                    "{:.0} MB used / {:.0} MB reserved in {} allocations, {} blocks ({kinds}) [by label: {top}]",
 +                    r.total_allocated_bytes as f64 / MB,
 +                    r.total_reserved_bytes as f64 / MB,
 +                    r.allocations.len(),
-+                    r.blocks.len()
++                    r.blocks.len(),
 +                )
 +            })
 +            .unwrap_or_else(|| "n/a".to_string());
@@ -8852,7 +10092,7 @@ index 5dcf43c0a..dd23f32a0 100644
  impl WgpuRenderBackend<SwapChainTarget> {
      #[cfg(target_family = "wasm")]
      pub async fn for_canvas(
-@@ -230,6 +326,9 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+@@ -230,6 +352,9 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                  .into());
          }
  
@@ -8862,7 +10102,7 @@ index 5dcf43c0a..dd23f32a0 100644
          let surface = Surface::new(
              &descriptors,
              StageQuality::Low,
-@@ -267,6 +366,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+@@ -267,6 +392,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
          #[cfg(not(feature = "profile-with-tracy"))]
          let profiler = GpuProfiler::new(&descriptors.device, profiler_settings)?;
  
@@ -8870,7 +10110,7 @@ index 5dcf43c0a..dd23f32a0 100644
          Ok(Self {
              descriptors,
              target,
-@@ -274,8 +374,25 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+@@ -274,8 +400,25 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
              meshes: Vec::new(),
              shape_tessellator: ShapeTessellator::new(),
              viewport_scale_factor: 1.0,
@@ -8898,10 +10138,18 @@ index 5dcf43c0a..dd23f32a0 100644
              offscreen_buffer_pool: Arc::new(offscreen_buffer_pool),
              dynamic_transforms: transforms,
              active_frame,
-@@ -283,6 +400,266 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+@@ -283,6 +426,274 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
          })
      }
  
++    /// AQW build: frees every spare pooled texture and lets the GPU release the memory, for
++    /// when the GPU's memory is nearly full (see Mugetsu's memory watch).
++    pub fn aqw_trim_memory(&mut self) {
++        self.texture_pool.clear_idle();
++        self.offscreen_texture_pool.clear_idle();
++        crate::release_gpu_memory(&self.descriptors);
++    }
++
 +    /// AQW build: creates a texture; if the GPU is out of memory (2 GB laptop cards in crowded
 +    /// AQW rooms), frees every idle pooled texture, lets the GPU release them, and tries once
 +    /// more. `None` if it still doesn't fit: callers treat that like a too-large bitmap (a
@@ -9165,7 +10413,7 @@ index 5dcf43c0a..dd23f32a0 100644
      fn register_shape_internal(
          &mut self,
          shape: DistilledShape,
-@@ -290,27 +667,77 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+@@ -290,27 +701,77 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
          scale: f32,
      ) -> Mesh {
          let shape_id = shape.id;
@@ -9252,7 +10500,7 @@ index 5dcf43c0a..dd23f32a0 100644
          for draw in lyon_mesh.draws {
              let draw_id = draws.len();
              if let Some(draw) = PendingDraw::new(
-@@ -326,31 +753,42 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+@@ -326,31 +787,42 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
              }
          }
  
@@ -9313,7 +10561,7 @@ index 5dcf43c0a..dd23f32a0 100644
          }
      }
  
-@@ -452,7 +890,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -452,7 +924,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          );
  
          self.viewport_scale_factor = dimensions.scale_factor;
@@ -9322,7 +10570,7 @@ index 5dcf43c0a..dd23f32a0 100644
      }
  
      fn create_context3d(
-@@ -527,7 +965,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -527,7 +999,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          shape: DistilledShape,
          bitmap_source: &dyn BitmapSource,
      ) -> ShapeHandle {
@@ -9335,7 +10583,7 @@ index 5dcf43c0a..dd23f32a0 100644
          ShapeHandle(Arc::new(mesh))
      }
  
-@@ -538,10 +981,108 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -538,10 +1015,108 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          bitmap_source: &dyn BitmapSource,
          scale: f32,
      ) -> ShapeHandle {
@@ -9444,7 +10692,7 @@ index 5dcf43c0a..dd23f32a0 100644
      #[instrument(level = "debug", skip_all)]
      fn submit_frame(
          &mut self,
-@@ -549,6 +1090,13 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -549,6 +1124,13 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          commands: CommandList,
          cache_entries: Vec<BitmapCacheEntry>,
      ) {
@@ -9458,7 +10706,7 @@ index 5dcf43c0a..dd23f32a0 100644
          let Some(frame_output) = self.target.get_next_texture() else {
              // Attempt to recreate the swap chain in this case.
              self.target.resize(
-@@ -559,7 +1107,32 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -559,7 +1141,32 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
              return;
          };
  
@@ -9491,7 +10739,7 @@ index 5dcf43c0a..dd23f32a0 100644
              let texture = as_texture(&entry.handle);
              let surface = Surface::new(
                  &self.descriptors,
-@@ -637,12 +1210,26 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -637,12 +1244,26 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                      &mut scope.scope("Copy filtered to CAB"),
                  );
              }
@@ -9518,7 +10766,7 @@ index 5dcf43c0a..dd23f32a0 100644
          self.surface.draw_commands_and_copy_to(
              frame_output.view(),
              RenderTargetMode::FreshWithColor(wgpu::Color {
-@@ -662,13 +1249,28 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -662,13 +1283,28 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
              LayerRef::None,
              &mut self.texture_pool,
          );
@@ -9548,7 +10796,7 @@ index 5dcf43c0a..dd23f32a0 100644
          self.profiler
              .end_frame()
              .expect("Frame should end successfully");
-@@ -690,9 +1292,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -690,9 +1326,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
  
          let texture_label = create_debug_label!("Bitmap");
          let texture = self
@@ -9559,7 +10807,7 @@ index 5dcf43c0a..dd23f32a0 100644
                  label: texture_label.as_deref(),
                  size: extent,
                  mip_level_count: 1,
-@@ -704,8 +1304,10 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -704,8 +1338,10 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                      | wgpu::TextureUsages::COPY_DST
                      | wgpu::TextureUsages::RENDER_ATTACHMENT
                      | wgpu::TextureUsages::COPY_SRC,
@@ -9571,7 +10819,7 @@ index 5dcf43c0a..dd23f32a0 100644
          self.descriptors.queue.write_texture(
              wgpu::TexelCopyTextureInfo {
                  texture: &texture,
-@@ -723,6 +1325,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -723,6 +1359,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          );
  
          let handle = BitmapHandle(Arc::new(Texture {
@@ -9579,7 +10827,7 @@ index 5dcf43c0a..dd23f32a0 100644
              texture,
              repeating_linear: Default::default(),
              repeating_nearest: Default::default(),
-@@ -763,6 +1366,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -763,6 +1400,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          };
  
          self.active_frame.submit_direct(&self.descriptors);
@@ -9587,7 +10835,7 @@ index 5dcf43c0a..dd23f32a0 100644
          self.descriptors.queue.write_texture(
              wgpu::TexelCopyTextureInfo {
                  texture: &texture.texture,
-@@ -795,6 +1399,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -795,6 +1433,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
          quality: StageQuality,
          bounds: PixelRegion,
      ) -> Option<Box<dyn SyncHandle>> {
@@ -9595,7 +10843,7 @@ index 5dcf43c0a..dd23f32a0 100644
          let texture = as_texture(&handle);
  
          let extent = wgpu::Extent3d {
-@@ -1001,6 +1606,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -1001,6 +1640,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                              | wgpu::TextureUsages::COPY_SRC,
                      });
                  BitmapHandle(Arc::new(Texture {
@@ -9603,30 +10851,35 @@ index 5dcf43c0a..dd23f32a0 100644
                      texture,
                      repeating_linear: Default::default(),
                      repeating_nearest: Default::default(),
-@@ -1145,9 +1751,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -1144,10 +1784,10 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+         };
  
          let texture_label = create_debug_label!("Bitmap");
-         let texture = self
+-        let texture = self
 -            .descriptors
 -            .device
 -            .create_texture(&wgpu::TextureDescriptor {
-+            .create_texture_making_room(&wgpu::TextureDescriptor {
++        // AQW build: only cacheAsBitmap uses this; those pictures are remade whenever their
++        // object changes size and freed with it, so they get GPU memory of their own.
++        let texture = crate::texture_kind(crate::CACHED_TEXTURES, || {
++            self.create_texture_making_room(&wgpu::TextureDescriptor {
                  label: texture_label.as_deref(),
                  size: extent,
                  mip_level_count: 1,
-@@ -1159,8 +1763,10 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+@@ -1159,8 +1799,11 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                      | wgpu::TextureUsages::COPY_DST
                      | wgpu::TextureUsages::RENDER_ATTACHMENT
                      | wgpu::TextureUsages::COPY_SRC,
 -            });
 +            })
-+            .ok_or(BitmapError::TooLarge)?;
++        })
++        .ok_or(BitmapError::TooLarge)?;
          Ok(BitmapHandle(Arc::new(Texture {
 +            live: Some(crate::perf_counters::LiveBitmap::new(&texture)),
              texture,
              repeating_linear: Default::default(),
              repeating_nearest: Default::default(),
-@@ -1205,6 +1811,7 @@ pub async fn request_adapter_and_device(
+@@ -1205,6 +1848,7 @@ pub async fn request_adapter_and_device(
          })?;
  
      let (device, queue) = request_device(&adapter).await?;
@@ -9634,7 +10887,7 @@ index 5dcf43c0a..dd23f32a0 100644
      Ok((adapter, device, queue))
  }
  
-@@ -1238,7 +1845,17 @@ async fn request_device(
+@@ -1238,7 +1882,17 @@ async fn request_device(
              label: None,
              required_features: features,
              required_limits: limits,
@@ -9653,7 +10906,7 @@ index 5dcf43c0a..dd23f32a0 100644
              trace: wgpu::Trace::Off,
              experimental_features: wgpu::ExperimentalFeatures::disabled(),
          })
-@@ -1276,6 +1893,8 @@ pub struct ActiveFrame {
+@@ -1276,6 +1930,8 @@ pub struct ActiveFrame {
      pub staging_belt: wgpu::util::StagingBelt,
      pub command_encoder: wgpu::CommandEncoder,
      draws_since_flush: u32,
@@ -9662,7 +10915,7 @@ index 5dcf43c0a..dd23f32a0 100644
  }
  
  impl ActiveFrame {
-@@ -1288,6 +1907,7 @@ impl ActiveFrame {
+@@ -1288,6 +1944,7 @@ impl ActiveFrame {
                  .create_command_encoder(&Default::default()),
              staging_belt: wgpu::util::StagingBelt::new(descriptors.device.clone(), 65536),
              draws_since_flush: 0,
@@ -9670,7 +10923,7 @@ index 5dcf43c0a..dd23f32a0 100644
          }
      }
  
-@@ -1305,13 +1925,36 @@ impl ActiveFrame {
+@@ -1305,13 +1962,36 @@ impl ActiveFrame {
                  .device
                  .create_command_encoder(&Default::default()),
          );
@@ -9713,7 +10966,7 @@ index 5dcf43c0a..dd23f32a0 100644
          index
      }
  
-@@ -1324,7 +1967,9 @@ impl ActiveFrame {
+@@ -1324,7 +2004,9 @@ impl ActiveFrame {
                  .device
                  .create_command_encoder(&Default::default()),
          );
@@ -9724,7 +10977,7 @@ index 5dcf43c0a..dd23f32a0 100644
          self.staging_belt.recall();
          index
      }
-@@ -1341,3 +1986,46 @@ impl ActiveFrame {
+@@ -1341,3 +2023,46 @@ impl ActiveFrame {
          }
      }
  }
@@ -9817,7 +11070,7 @@ index 1282234e9..0c7c22fe0 100644
          self,
          device: &wgpu::Device,
 diff --git a/render/wgpu/src/buffer_pool.rs b/render/wgpu/src/buffer_pool.rs
-index 7d36ac70c..446a5a666 100644
+index 7d36ac70c..aab66b0db 100644
 --- a/render/wgpu/src/buffer_pool.rs
 +++ b/render/wgpu/src/buffer_pool.rs
 @@ -10,8 +10,18 @@ type Constructor<Type, Description> = Box<dyn Fn(&Descriptors, &Description) ->
@@ -9898,19 +11151,36 @@ index 7d36ac70c..446a5a666 100644
              let label = if cfg!(feature = "render_debug_labels") {
                  use std::sync::atomic::{AtomicU32, Ordering};
                  static ID_COUNT: AtomicU32 = AtomicU32::new(0);
-@@ -42,7 +93,10 @@ impl TexturePool {
+@@ -42,21 +93,34 @@ impl TexturePool {
              } else {
                  None
              };
 -            BufferPool::new(Box::new(move |descriptors, _description| {
+-                let texture = descriptors.device.create_texture(&wgpu::TextureDescriptor {
+-                    label: label.as_deref(),
+-                    size,
+-                    mip_level_count: 1,
+-                    sample_count,
+-                    dimension: wgpu::TextureDimension::D2,
+-                    format,
+-                    view_formats: &[format],
+-                    usage,
 +            (BufferPool::new(Box::new(move |descriptors, _description| {
 +                let _timer = crate::perf_counters::timers::Scoped::new(
 +                    crate::perf_counters::timers::TEXTURE_CREATE,
 +                );
-                 let texture = descriptors.device.create_texture(&wgpu::TextureDescriptor {
-                     label: label.as_deref(),
-                     size,
-@@ -55,8 +109,15 @@ impl TexturePool {
++                // AQW build: pooled textures come and go; they get GPU memory of their own.
++                let texture = crate::texture_kind(crate::TRANSIENT_TEXTURES, || {
++                    descriptors.device.create_texture(&wgpu::TextureDescriptor {
++                        label: label.as_deref(),
++                        size,
++                        mip_level_count: 1,
++                        sample_count,
++                        dimension: wgpu::TextureDimension::D2,
++                        format,
++                        view_formats: &[format],
++                        usage,
++                    })
                  });
                  let view = texture.create_view(&Default::default());
                  (texture, view)
@@ -9927,7 +11197,7 @@ index 7d36ac70c..446a5a666 100644
          pool.take(descriptors, AlwaysCompatible)
      }
  
-@@ -66,21 +127,113 @@ impl TexturePool {
+@@ -66,21 +130,124 @@ impl TexturePool {
          viewport_width: u32,
          viewport_height: u32,
      ) -> Arc<Globals> {
@@ -10007,6 +11277,13 @@ index 7d36ac70c..446a5a666 100644
 +                .unwrap_or(IDLE_LIMIT_MB)
 +                << 20
 +        });
++        // AQW build: while the GPU's memory is nearly full, keep far fewer spare textures.
++        let limit = if MEMORY_PRESSURE.load(std::sync::atomic::Ordering::Relaxed) {
++            const PRESSURE_LIMIT: u64 = 64 << 20;
++            if limit == 0 { PRESSURE_LIMIT } else { limit.min(PRESSURE_LIMIT) }
++        } else {
++            limit
++        };
 +        if limit == 0 {
 +            return;
 +        }
@@ -10035,6 +11312,10 @@ index 7d36ac70c..446a5a666 100644
 +        }
 +    }
 +}
++
++/// AQW build: set while the GPU's memory is nearly full (see `set_memory_pressure`).
++pub(crate) static MEMORY_PRESSURE: std::sync::atomic::AtomicBool =
++    std::sync::atomic::AtomicBool::new(false);
 +
 +/// Approximate bytes of a pool's idle textures.
 +fn idle_bytes(
@@ -11133,7 +12414,7 @@ index 15a8d5253..e5609bba9 100644
              label: create_debug_label!("Glow filter").as_deref(),
              color_attachments: &[target.color_attachments()],
 diff --git a/render/wgpu/src/lib.rs b/render/wgpu/src/lib.rs
-index 1787a84bf..3300863e3 100644
+index 1787a84bf..78892339d 100644
 --- a/render/wgpu/src/lib.rs
 +++ b/render/wgpu/src/lib.rs
 @@ -28,6 +28,8 @@ type Error = Box<dyn std::error::Error>;
@@ -11163,7 +12444,7 @@ index 1787a84bf..3300863e3 100644
      pub(crate) texture: wgpu::Texture,
      repeating_linear: OnceCell<BitmapBinds>,
      repeating_nearest: OnceCell<BitmapBinds>,
-@@ -304,3 +310,429 @@ impl Texture {
+@@ -304,3 +310,464 @@ impl Texture {
          })
      }
  }
@@ -11592,6 +12873,41 @@ index 1787a84bf..3300863e3 100644
 +    pub fn take_pending() -> bool {
 +        PENDING.swap(false, Ordering::Relaxed)
 +    }
++}
++
++/// AQW build: while `true` (the GPU's memory is nearly full), the texture pools keep at most
++/// 64 MB of spare textures instead of 512 MB.
++pub fn set_memory_pressure(on: bool) {
++    buffer_pool::MEMORY_PRESSURE.store(on, std::sync::atomic::Ordering::Relaxed);
++}
++
++static TEXTURE_KINDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++
++/// AQW build: turns `texture_kind` off (a `no-transient-memory` file next to the exe, at
++/// startup), for A/B comparisons.
++pub fn set_transient_textures_enabled(enabled: bool) {
++    TEXTURE_KINDS.store(enabled, std::sync::atomic::Ordering::Relaxed);
++}
++
++pub fn transient_textures_enabled() -> bool {
++    TEXTURE_KINDS.load(std::sync::atomic::Ordering::Relaxed)
++}
++
++/// AQW build: GPU memory blocks of their own for textures that come and go all the time
++/// (pooled layers): see `wgpu_core::aqw_texture_kind`.
++pub(crate) const TRANSIENT_TEXTURES: u8 = 1;
++/// AQW build: the same for textures that live as long as some object (cacheAsBitmap).
++pub(crate) const CACHED_TEXTURES: u8 = 2;
++
++/// AQW build: textures created inside `f` get GPU memory blocks of their own for their `kind`
++/// (`TRANSIENT_TEXTURES` or `CACHED_TEXTURES`).
++pub(crate) fn texture_kind<R>(kind: u8, f: impl FnOnce() -> R) -> R {
++    #[cfg(not(target_family = "wasm"))]
++    if transient_textures_enabled() {
++        return wgpu_core::aqw_texture_kind(kind, f);
++    }
++    let _ = kind;
++    f()
 +}
 diff --git a/render/wgpu/src/mesh.rs b/render/wgpu/src/mesh.rs
 index f733f23f6..a6e8a04c7 100644

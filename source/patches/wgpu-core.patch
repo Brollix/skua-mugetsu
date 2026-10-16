@@ -341,10 +341,10 @@ index 2e09f25..39a7625 100644
                  if let Some(present) = surface.presentation.lock().take() {
                      if present.acquired_texture.is_some() {
 diff --git a/src/lib.rs b/src/lib.rs
-index 212aeff..b2c3f92 100644
+index 212aeff..bebfd59 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -251,3 +251,30 @@ mod tests {
+@@ -251,3 +251,44 @@ mod tests {
          assert_eq!(get_greatest_common_divisor(7, 7), 7);
      }
  }
@@ -354,6 +354,20 @@ index 212aeff..b2c3f92 100644
 +/// allocation that ran out of memory).
 +pub fn aqw_flush_encoder_drops() {
 +    device::flush_encoder_drops();
++}
++
++/// AQW build: textures created inside `f` get GPU memory blocks of their own for their
++/// `kind` (see `wgpu_hal::aqw_texture_kind`).
++pub fn aqw_texture_kind<R>(kind: u8, f: impl FnOnce() -> R) -> R {
++    #[cfg(any(dx12, vulkan))]
++    {
++        hal::aqw_texture_kind(kind, f)
++    }
++    #[cfg(not(any(dx12, vulkan)))]
++    {
++        let _ = kind;
++        f()
++    }
 +}
 +
 +/// AQW build: (encoders waiting to be dropped, submissions in flight), for Ruffle's perf log.
