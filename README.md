@@ -82,7 +82,7 @@ Medium or High, it shows this tip once; it never changes the setting for you.
 - **Open source.** All of Mugetsu's code is public in the [`source`](source) folder (GPL-3.0), and from version
   1.3.1 on, every release is built from it by GitHub Actions: each build's page shows its log and the SHA-256 of
   the zip it made.
-- **VirusTotal (version 1.3.1):** [zip 0/68](https://www.virustotal.com/gui/file/bf3feeeca0da45a97d27fb879bf06e7273825aecd420c52817f66d2bf15a0c4b) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/539e1f27960d5e78d3bed68950807cf9d711cd08e44e8686265fd0f20ef34674)
+- **VirusTotal (version 1.4.0):** [zip 0/67](https://www.virustotal.com/gui/file/5140b13bf6ba08bc7cd07e16dd42d53b00d3813be6dcffbf880dae6056e2c24f) · [Mugetsu.exe 0/70](https://www.virustotal.com/gui/file/9c5c0048f3ca1c88544b0e48a0b7750de39b2b26f25e6b5b83c930dc6237c5b7)
 - **SHA-256** of each release zip is listed on its release page, so you can check your download.
 
 ## FAQ
