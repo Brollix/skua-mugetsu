@@ -1,0 +1,13 @@
+# Build output and downloaded crates
+build/
+target/
+*.crate
+
+# Extracted PGO profile data
+*.profdata
+
+# Common editor and OS metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
