@@ -82,7 +82,7 @@ graphics running slowly on Medium or High, it shows this tip once; it never chan
 - **Open source.** All of Mugetsu's code is public in the [`source`](source) folder (GPL-3.0), and from version
   1.3.1 on, every release is built from it by GitHub Actions: each build's page shows its log and the SHA-256 of
   the zip it made.
-- **VirusTotal (version 1.4.0):** [zip 0/67](https://www.virustotal.com/gui/file/5140b13bf6ba08bc7cd07e16dd42d53b00d3813be6dcffbf880dae6056e2c24f) · [Mugetsu.exe 0/70](https://www.virustotal.com/gui/file/9c5c0048f3ca1c88544b0e48a0b7750de39b2b26f25e6b5b83c930dc6237c5b7)
+- **VirusTotal (version 1.5.0):** [zip 0/66](https://www.virustotal.com/gui/file/06778fe14a10ee68ef213c4894ac6fff346d910a7b594f971b4db6477b7773d3) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/d833145410a8b4b1ff5a716661da627b61b2a21c3955fa7e77c9740f0382810b)
 - **SHA-256** of each release zip is listed on its release page, so you can check your download.
 
 ## FAQ
