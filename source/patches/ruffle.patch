@@ -5389,6 +5389,32 @@ index 0c50b8c58..495f9671a 100644
          fn new_empty_font<'gc>(
              context: &mut dyn LayoutContext<'gc>,
              span: &TextSpan,
+diff --git a/core/src/input.rs b/core/src/input.rs
+index 922d13ea4..78aa2b9e0 100644
+--- a/core/src/input.rs
++++ b/core/src/input.rs
+@@ -104,10 +104,21 @@ impl InputManager {
+             last_char: None,
+             last_click: None,
+             gamepad_button_mapping,
++            #[cfg(target_os = "linux")]
++            key_code_mapping_type: KeyCodeMappingType::Physical,
++            #[cfg(not(target_os = "linux"))]
+             key_code_mapping_type: KeyCodeMappingType::Logical,
+         }
+     }
+ 
++    #[cfg(target_os = "linux")]
++    pub fn clear_keys(&mut self) {
++        self.keys_down.clear();
++        self.keys_down_phys_loc.clear();
++        self.last_key = KeyCode::UNKNOWN;
++        self.last_char = None;
++    }
++
+     fn add_key(&mut self, key_code: KeyCode) {
+         self.last_key = key_code;
+         if key_code != KeyCode::UNKNOWN {
 diff --git a/core/src/lib.rs b/core/src/lib.rs
 index d76c1cba7..ff44368c8 100644
 --- a/core/src/lib.rs
@@ -5849,7 +5875,7 @@ index 74188cd5e..2bc342602 100644
      }
  
 diff --git a/core/src/player.rs b/core/src/player.rs
-index 675ef3a78..f3cc5bf4e 100644
+index 675ef3a78..c8db8b9ce 100644
 --- a/core/src/player.rs
 +++ b/core/src/player.rs
 @@ -144,6 +144,13 @@ pub struct MouseData<'gc> {
@@ -6071,7 +6097,30 @@ index 675ef3a78..f3cc5bf4e 100644
      pub fn background_color(&mut self) -> Option<Color> {
          self.mutate_with_update_context(|context| context.stage.background_color())
      }
-@@ -1315,6 +1474,18 @@ impl Player {
+@@ -1061,6 +1220,22 @@ impl Player {
+     }
+ 
+     fn handle_focus_event(&mut self, event: PlayerEvent) -> bool {
++        #[cfg(target_os = "linux")]
++        {
++            self.input.clear_keys();
++            self.mutate_with_update_context(|context| {
++                let event_name = match event {
++                    PlayerEvent::FocusLost => "deactivate",
++                    PlayerEvent::FocusGained => "activate",
++                    _ => return,
++                };
++                if let Some(stage) = context.stage.object2() {
++                    let evt = Avm2EventObject::bare_default_event(context, event_name);
++                    Avm2::dispatch_event(context, evt, stage.into());
++                }
++            });
++        }
++        #[cfg(not(target_os = "linux"))]
+         if let PlayerEvent::FocusLost = event {
+             self.mutate_with_update_context(|context| {
+                 let focus_tracker = context.focus_tracker;
+@@ -1315,6 +1490,18 @@ impl Player {
                  player_event_handled = true;
              }
  
@@ -6090,7 +6139,7 @@ index 675ef3a78..f3cc5bf4e 100644
              // Fire event listener on appropriate object
              if let Some((listener_type, event_name, args)) = listener
                  && let Some(root_clip) = context.stage.root_clip()
-@@ -1668,6 +1839,19 @@ impl Player {
+@@ -1668,6 +1855,19 @@ impl Player {
              if !skip_mouse_hover
                  && !InteractiveObject::option_ptr_eq(cur_over_object, new_over_object)
              {
@@ -6110,7 +6159,7 @@ index 675ef3a78..f3cc5bf4e 100644
                  // If the mouse button is down, the object the user clicked on grabs the focus
                  // and fires "drag" events.
                  if context.input.is_mouse_down(MouseButton::Left) {
-@@ -1806,6 +1990,9 @@ impl Player {
+@@ -1806,6 +2006,9 @@ impl Player {
                          MouseButton::Middle => ClipEvent::MiddlePress,
                          _ => unreachable!(),
                      };
@@ -6120,7 +6169,7 @@ index 675ef3a78..f3cc5bf4e 100644
                      // Pressed on a hovered object.
                      if let Some(over_object) = context.mouse_data.hovered {
                          events.push((over_object, event));
-@@ -2050,6 +2237,7 @@ impl Player {
+@@ -2050,6 +2253,7 @@ impl Player {
  
      #[instrument(level = "debug", skip_all)]
      pub fn run_frame(&mut self) {
@@ -6128,7 +6177,7 @@ index 675ef3a78..f3cc5bf4e 100644
          let frame_time = self.frame_time(750_000_000.0);
          let frame_time = Duration::from_nanos(frame_time as u64);
          let (mut execution_limit, may_execute_while_streaming) = match self.load_behavior {
-@@ -2084,10 +2272,21 @@ impl Player {
+@@ -2084,10 +2288,21 @@ impl Player {
          });
  
          self.needs_render = true;
@@ -6150,7 +6199,7 @@ index 675ef3a78..f3cc5bf4e 100644
          let invalidated = self.enter_arena(|_, gc_root, _| gc_root.stage.invalidated());
  
          if invalidated {
-@@ -2099,11 +2298,26 @@ impl Player {
+@@ -2099,11 +2314,26 @@ impl Player {
  
          let mut background_color = Color::WHITE;
  
@@ -6177,7 +6226,7 @@ index 675ef3a78..f3cc5bf4e 100644
                  renderer: this.renderer.deref_mut(),
                  commands: CommandList::new(),
                  cache_draws: &mut cache_draws,
-@@ -2116,7 +2330,23 @@ impl Player {
+@@ -2116,7 +2346,23 @@ impl Player {
                  stage,
              };
  
@@ -6202,7 +6251,7 @@ index 675ef3a78..f3cc5bf4e 100644
  
              #[cfg(feature = "egui")]
              {
-@@ -2125,6 +2355,13 @@ impl Player {
+@@ -2125,6 +2371,13 @@ impl Player {
                      .draw_debug_rects(&mut render_context, gc_root.dynamic_root);
              }
  
@@ -6216,7 +6265,7 @@ index 675ef3a78..f3cc5bf4e 100644
              background_color =
                  if stage.window_mode() != WindowMode::Transparent || stage.is_fullscreen() {
                      stage.background_color().unwrap_or(Color::WHITE)
-@@ -2139,6 +2376,8 @@ impl Player {
+@@ -2139,6 +2392,8 @@ impl Player {
              (cache_draws, commands)
          });
  
@@ -6225,7 +6274,7 @@ index 675ef3a78..f3cc5bf4e 100644
          self.renderer
              .submit_frame(background_color, commands, cache_draws);
  
-@@ -2440,11 +2679,58 @@ impl Player {
+@@ -2440,11 +2695,58 @@ impl Player {
          self.update_mouse_state(EnumSet::empty(), false, &mut false);
  
          // GC
@@ -6285,7 +6334,7 @@ index 675ef3a78..f3cc5bf4e 100644
      pub fn flush_shared_objects(&mut self) {
          self.update(|context| {
              if let Some(mut avm1_activation) =
-@@ -2980,6 +3266,7 @@ impl PlayerBuilder {
+@@ -2980,6 +3282,7 @@ impl PlayerBuilder {
          };
  
          let data = GcRootData {
@@ -6293,7 +6342,7 @@ index 675ef3a78..f3cc5bf4e 100644
              audio_manager: AudioManager::new(),
              action_queue: ActionQueue::new(),
              avm1,
-@@ -3002,6 +3289,8 @@ impl PlayerBuilder {
+@@ -3002,6 +3305,8 @@ impl PlayerBuilder {
                  middle_pressed: None,
                  forced_cursor: None,
                  updating_drop_target: false,
@@ -6302,7 +6351,7 @@ index 675ef3a78..f3cc5bf4e 100644
              },
              avm1_shared_objects: HashMap::new(),
              avm2_shared_objects: HashMap::new(),
-@@ -3085,6 +3374,8 @@ impl PlayerBuilder {
+@@ -3085,6 +3390,8 @@ impl PlayerBuilder {
                  frame_phase: Default::default(),
                  frame_accumulator: FloatDuration::ZERO,
                  recent_run_frame_timings: VecDeque::with_capacity(10),
@@ -6311,7 +6360,7 @@ index 675ef3a78..f3cc5bf4e 100644
                  start_time: Instant::now(),
                  time_offset: 0,
                  time_til_next_timer: None,
-@@ -3252,6 +3543,7 @@ fn run_mouse_pick<'gc>(
+@@ -3252,6 +3559,7 @@ fn run_mouse_pick<'gc>(
      context: &mut UpdateContext<'gc>,
      require_button_mode: bool,
  ) -> Option<InteractiveObject<'gc>> {
@@ -6319,7 +6368,7 @@ index 675ef3a78..f3cc5bf4e 100644
      context.stage.iter_render_list().rev().find_map(|level| {
          level.as_interactive().and_then(|l| {
              if l.as_displayobject().movie().is_action_script_3() {
-@@ -3320,3 +3612,148 @@ pub enum PlayerMode {
+@@ -3320,3 +3628,148 @@ pub enum PlayerMode {
      /// Represents the debug version of Flash Player, i.e. flashplayerdebugger.
      Debug,
  }
@@ -8611,7 +8660,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index a3410740e..060637dfd 100644
+index a3410740e..24f3d8975 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
 @@ -15,7 +15,7 @@ use ruffle_core::swf::HeaderExt;
@@ -9092,7 +9141,25 @@ index a3410740e..060637dfd 100644
              }
              WindowEvent::DroppedFile(file) => {
                  if let Some(content_descriptor) = ContentDescriptor::new_local(&file, None) {
-@@ -140,6 +554,9 @@ impl MainWindow {
+@@ -130,9 +544,17 @@ impl MainWindow {
+                 }
+             }
+             WindowEvent::Focused(true) => {
++                #[cfg(target_os = "linux")]
++                {
++                    self.modifiers = Default::default();
++                }
+                 self.player.handle_event(PlayerEvent::FocusGained);
+             }
+             WindowEvent::Focused(false) => {
++                #[cfg(target_os = "linux")]
++                {
++                    self.modifiers = Default::default();
++                }
+                 self.player.handle_event(PlayerEvent::FocusLost);
+             }
+             WindowEvent::MouseInput { button, state, .. } => {
+@@ -140,6 +562,9 @@ impl MainWindow {
                      return;
                  }
  
@@ -9102,7 +9169,7 @@ index a3410740e..060637dfd 100644
                  use ruffle_core::events::MouseButton as RuffleMouseButton;
                  use winit::event::MouseButton;
                  let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
-@@ -166,6 +583,8 @@ impl MainWindow {
+@@ -166,6 +591,8 @@ impl MainWindow {
                      // Show context menu.
                      if let Some(mut player) = self.player.get() {
                          let context_menu = player.prepare_context_menu();
@@ -9111,7 +9178,7 @@ index a3410740e..060637dfd 100644
  
                          // MouseUp event will be ignored when the context menu is shown,
                          // but it has to be dispatched when the menu closes.
-@@ -174,7 +593,7 @@ impl MainWindow {
+@@ -174,7 +601,7 @@ impl MainWindow {
                              y,
                              button: RuffleMouseButton::Right,
                          };
@@ -9120,7 +9187,7 @@ index a3410740e..060637dfd 100644
                      }
                  }
                  self.check_redraw();
-@@ -203,6 +622,7 @@ impl MainWindow {
+@@ -203,6 +630,7 @@ impl MainWindow {
                  }
              }
              WindowEvent::CursorLeft { .. } => {
@@ -9128,7 +9195,7 @@ index a3410740e..060637dfd 100644
                  if let Some(mut player) = self.player.get() {
                      player.set_mouse_in_stage(false);
                  }
-@@ -267,6 +687,54 @@ impl MainWindow {
+@@ -267,6 +695,54 @@ impl MainWindow {
          }
      }
  
@@ -9183,7 +9250,7 @@ index a3410740e..060637dfd 100644
      fn on_metadata(&mut self, swf_header: HeaderExt) {
          let height_offset = if self.gui.window().fullscreen().is_some() || self.no_gui {
              0.0
-@@ -389,21 +857,171 @@ impl MainWindow {
+@@ -389,21 +865,171 @@ impl MainWindow {
          // We should look at changing our tick to happen somewhere else if we see any behavioural problems.
          if matches!(self.loaded, LoadingState::Loaded) {
              let new_time = Instant::now();
@@ -9356,7 +9423,7 @@ index a3410740e..060637dfd 100644
              self.gui.window().request_redraw();
          }
      }
-@@ -429,6 +1047,9 @@ macro_rules! enter_runtime {
+@@ -429,6 +1055,9 @@ macro_rules! enter_runtime {
  impl App {
      pub fn new(preferences: GlobalPreferences) -> Result<(Self, EventLoop<RuffleEvent>), Error> {
          let event_loop = EventLoop::with_user_event().build()?;
@@ -9366,7 +9433,7 @@ index a3410740e..060637dfd 100644
  
          let mut font_database = fontdb::Database::default();
          font_database.load_system_fonts();
-@@ -461,9 +1082,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -461,9 +1090,10 @@ impl ApplicationHandler<RuffleEvent> for App {
  
          if cause == StartCause::Init {
              let movie_url = self.preferences.cli.movie_url.clone();
@@ -9379,7 +9446,7 @@ index a3410740e..060637dfd 100644
  
              let no_gui = self.preferences.cli.no_gui;
              let min_window_size = if no_gui {
-@@ -479,7 +1101,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -479,7 +1109,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
              let mut window_attributes = WindowAttributes::default()
                  .with_visible(false)
@@ -9388,7 +9455,7 @@ index a3410740e..060637dfd 100644
                  .with_window_icon(Some(icon))
                  .with_min_inner_size(min_window_size);
  
-@@ -560,10 +1182,26 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -560,10 +1190,26 @@ impl ApplicationHandler<RuffleEvent> for App {
                  minimized: false,
                  occluded: false,
                  mouse_pos: PhysicalPosition::new(0.0, 0.0),
@@ -9415,7 +9482,7 @@ index a3410740e..060637dfd 100644
              });
          }
      }
-@@ -586,6 +1224,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -586,6 +1232,10 @@ impl ApplicationHandler<RuffleEvent> for App {
                  }
              }
  
@@ -9426,7 +9493,7 @@ index a3410740e..060637dfd 100644
              (Some(main_window), RuffleEvent::BrowseAndOpen(options, open_type)) => {
                  let event_loop = main_window.event_loop_proxy.clone();
                  let picker = main_window.gui.file_picker();
-@@ -619,7 +1261,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -619,7 +1269,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              }
  
              (Some(main_window), RuffleEvent::CloseFile) => {
@@ -9435,7 +9502,7 @@ index a3410740e..060637dfd 100644
                  main_window.gui.close_movie(&mut main_window.player);
              }
  
-@@ -702,18 +1344,28 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -702,18 +1352,28 @@ impl ApplicationHandler<RuffleEvent> for App {
              // only place where we're setting control flow, and events cancel wait.
              // Note: the control flow might be set to `ControlFlow::WaitUntil` with a
              // timestamp in the past! Take that into consideration when changing this code.
@@ -9466,7 +9533,7 @@ index a3410740e..060637dfd 100644
  
          // Manually stop the tokio runtime: this makes sure that any pending Player-bound futures
          // are properly cancelled and put back on the winit event loop before it closes, preventing
-@@ -721,6 +1373,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -721,6 +1381,7 @@ impl ApplicationHandler<RuffleEvent> for App {
          if let Some(runtime) = self.runtime.take() {
              runtime.shutdown_timeout(std::time::Duration::from_secs(1));
          }
@@ -9474,7 +9541,7 @@ index a3410740e..060637dfd 100644
      }
  }
  
-@@ -729,3 +1382,17 @@ enum LoadingState {
+@@ -729,3 +1390,17 @@ enum LoadingState {
      WaitingForResize,
      Loaded,
  }
