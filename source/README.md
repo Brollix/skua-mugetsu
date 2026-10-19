@@ -36,6 +36,17 @@ a while: Ruffle is a large program.
 Your build won't be byte-for-byte identical to a release (file paths and the machine differ), but
 it's made from the same code the same way.
 
+
+## Building it yourself (Linux)
+
+You need [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`), Java 17 or newer and git. Then, in this folder:
+
+```
+./build.sh
+```
+
+The result is `build/out/Mugetsu`. `--no-pgo` builds without the speed profile.
+
 ## What the changes do
 
 Speed:
