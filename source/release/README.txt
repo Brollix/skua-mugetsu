@@ -55,8 +55,9 @@ How to use
   3. Log in as usual.
   Closing the game window closes everything.
 
-  Strong PC? Right-click the title bar -> Frame interpolation for smoother motion (off by
-  default).
+  Settings: right-click anywhere on the game for Mugetsu's menu: Frame interpolation
+  (smoother motion on strong PCs, off by default), Edge smoothing, Graphics, Show FPS,
+  Full screen and Open log folder.
 
 Safety and privacy
 ------------------
@@ -76,10 +77,8 @@ Safety and privacy
 
 Low FPS on a laptop or older PC?
 --------------------------------
-  In AQW's Options, set Quality to LOW. Edge smoothing (Medium/High) is by far the most
-  expensive part of drawing crowded rooms on a weak or built-in graphics chip: in testing,
-  the weakest integrated GPU went from ~3 FPS on High to a locked 24 FPS on Low in a full
-  Battleon. AQW remembers the setting. Medium is a middle ground for stronger laptops.
+  In AQW's Options, set Quality to LOW. Since 1.5.0, Medium and High cost much less than
+  before on built-in graphics, but Low is still the fastest. AQW remembers the setting.
   When Mugetsu runs on built-in graphics with Quality on Medium or High and the game is
   clearly slow, it shows this tip once. It never changes the setting for you.
 

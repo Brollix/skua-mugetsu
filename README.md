@@ -62,12 +62,12 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
    isn't signed by a known publisher: click **More info → Run anyway**.
 3. Log in as usual.
 
-**Strong PC?** Right-click the title bar → **Frame interpolation** for smoother motion (off by default).
+**Settings:** right-click anywhere on the game for Mugetsu's menu: **Frame interpolation** (smoother motion on
+strong PCs, off by default), **Edge smoothing**, **Graphics**, **Show FPS**, **Full screen** and **Open log folder**.
 
-**Low FPS on a laptop or older PC?** In AQW's Options, set **Quality to Low**. Edge smoothing is by far the
-most expensive part of drawing crowded rooms on weak graphics chips; on Low even very weak integrated
-graphics held 24 FPS in a full Battleon in testing. If Mugetsu notices built-in graphics running slowly on
-Medium or High, it shows this tip once; it never changes the setting for you.
+**Low FPS on a laptop or older PC?** In AQW's Options, set **Quality to Low**. Since 1.5.0, Medium and High
+cost much less than before on built-in graphics, but Low is still the fastest. If Mugetsu notices built-in
+graphics running slowly on Medium or High, it shows this tip once; it never changes the setting for you.
 
 ## Safety and privacy
 

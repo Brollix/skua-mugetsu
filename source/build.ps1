@@ -38,11 +38,13 @@ Run git @('-C', $ruffle, '-c', 'advice.detachedHead=false', 'checkout', '-q', 'F
 # 2. Mugetsu's changes to Ruffle.
 Run git @('-C', $ruffle, 'apply', '--whitespace=nowarn', (Join-Path $root 'patches\ruffle.patch'))
 
-# 3. The three libraries Mugetsu changes, from crates.io, patched into ruffle\patches\.
+# 3. The libraries Mugetsu changes, from crates.io, patched into ruffle\patches\.
 $crates = @(
     @{ Name = 'wgpu-core'; Version = '30.0.1' },
     @{ Name = 'wgpu-hal'; Version = '30.0.1' },
-    @{ Name = 'gc-arena'; Version = '0.7.0' }
+    @{ Name = 'gc-arena'; Version = '0.7.0' },
+    @{ Name = 'lyon_path'; Version = '1.0.7' },
+    @{ Name = 'lyon_algorithms'; Version = '1.0.5' }
 )
 New-Item -ItemType Directory -Force (Join-Path $ruffle 'patches') | Out-Null
 foreach ($crate in $crates) {
