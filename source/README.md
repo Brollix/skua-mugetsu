@@ -2,11 +2,11 @@
 
 Mugetsu is [Ruffle](https://github.com/ruffle-rs/ruffle) (the open-source Flash Player emulator)
 with changes for AdventureQuest Worlds. This folder holds those changes as patches on top of
-Ruffle, plus the script that builds `Mugetsu.exe` from them.
+Ruffle, plus the scripts that build `Mugetsu.exe` (Windows) and `Mugetsu` (Linux) from them.
 
 Every release is built from this folder by GitHub Actions (`.github/workflows/build.yml`); each
-run's page shows the build log and the SHA-256 of the zip it made, which matches the file on the
-release page.
+run's page shows the build log and the SHA-256 of the files it made, which match the files on
+the release page.
 
 ## What's here
 
@@ -15,10 +15,10 @@ release page.
 | `RUFFLE_COMMIT` | The Ruffle commit Mugetsu is based on (nightly of 2026-10-02) |
 | `RUST_VERSION` | The Rust version releases are built with |
 | `patches/ruffle.patch` | All of Mugetsu's changes to Ruffle |
-| `patches/wgpu-core.patch`, `wgpu-hal.patch`, `gc-arena.patch` | Changes to three libraries Ruffle uses (wgpu-core 30.0.1, wgpu-hal 30.0.1, gc-arena 0.7.0 from crates.io) |
+| `patches/wgpu-core.patch`, `wgpu-hal.patch`, `gc-arena.patch`, `lyon_path.patch`, `lyon_algorithms.patch` | Changes to five libraries Ruffle uses (wgpu-core 30.0.1, wgpu-hal 30.0.1, gc-arena 0.7.0, lyon_path 1.0.7, lyon_algorithms 1.0.5 from crates.io) |
 | `pgo/aqw.profdata.zip` | The speed profile (PGO): counts of which code runs most while playing AQW, recorded with a measuring build. The compiler uses it to optimize for real play. It holds function names and counts only. |
-| `build.ps1` | Downloads Ruffle at `RUFFLE_COMMIT` and the three libraries, applies the patches and builds |
-| `release/` | The other files in the release zip (readme, license texts, notices) |
+| `build.ps1`, `build.sh` | Download Ruffle at `RUFFLE_COMMIT` and the five libraries, apply the patches and build (Windows, Linux) |
+| `release/`, `release-linux/` | The other files in the Windows zip and the Linux archive (readme, license texts, notices) |
 | `notes/` | Release notes, used for the draft release |
 
 ## Building it yourself (Windows)
@@ -36,10 +36,12 @@ a while: Ruffle is a large program.
 Your build won't be byte-for-byte identical to a release (file paths and the machine differ), but
 it's made from the same code the same way.
 
-
 ## Building it yourself (Linux)
 
-You need [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`), Java 17 or newer and git. Then, in this folder:
+You need [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`), Java 17 or newer, git and
+the development files of a few system libraries (on Debian or Ubuntu:
+`sudo apt install build-essential pkg-config libasound2-dev libudev-dev libfontconfig-dev libfreetype6-dev libssl-dev`).
+Then, in this folder:
 
 ```
 ./build.sh
@@ -67,17 +69,18 @@ Looking and working like Flash:
 - Cutscenes stop at their Next buttons, chat scrolls and can be selected, newer Flash APIs are
   available to AQW, and more.
 
-The app around it: AQW's address and settings built in, graphics card choice in the title-bar
-menu, crash and update messages, a Quality tip for built-in graphics, and a performance log
-(`%LOCALAPPDATA%\ruffle\log\ruffle.log`).
+The app around it: AQW's address and settings built in, a settings menu on right-click
+(graphics API choice in the title-bar menu too on Windows), crash and update messages, a
+Quality tip for built-in graphics, and a performance log
+(`%LOCALAPPDATA%\ruffle\log\ruffle.log`; on Linux `~/.cache/ruffle/log/ruffle.log`).
 
 Comments in the code marked `AQW build:` explain each change.
 
 ## License
 
 Mugetsu's changes are licensed under the GNU General Public License 3.0 (see `LICENSE` at the
-top of this repository). Ruffle is dual-licensed MIT / Apache-2.0, wgpu-core and wgpu-hal are
-MIT / Apache-2.0 and gc-arena is MIT / CC0; their licenses still apply to their code, and the
-release zip includes all license texts and notices.
+top of this repository). Ruffle is dual-licensed MIT / Apache-2.0, wgpu-core, wgpu-hal,
+lyon_path and lyon_algorithms are MIT / Apache-2.0 and gc-arena is MIT / CC0; their licenses
+still apply to their code, and the release files include all license texts and notices.
 
 Mugetsu isn't affiliated with or endorsed by Artix Entertainment or the Ruffle project.

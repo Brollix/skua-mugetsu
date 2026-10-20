@@ -1,9 +1,9 @@
-# Builds Mugetsu from source/ on GitHub's Windows machines.
+# Builds Mugetsu from source/ on GitHub's Windows and Linux machines.
 #
-# - Every change to source/ on main: a test build, downloadable from the run's page.
+# - Every change to source/ on main: test builds, downloadable from the run's page.
 # - Actions > Build Mugetsu > Run workflow, with "Create a draft release" ticked: also makes a
-#   draft release with the zip and its SHA-256 (notes from source/notes/<version>.md), to check
-#   and publish by hand.
+#   draft release with the Windows zip, the Linux archive and their SHA-256 (notes from
+#   source/notes/<version>.md), to check and publish by hand.
 name: Build Mugetsu
 
 on:
@@ -21,9 +21,12 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     timeout-minutes: 240
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      sha: ${{ steps.package.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
 
@@ -56,32 +59,113 @@ jobs:
           Copy-Item source/build/out/Mugetsu.exe $dir
           Copy-Item source/release/* $dir -Recurse -Force
           Copy-Item LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
+          New-Item -ItemType Directory -Force release | Out-Null
           $zip = "Mugetsu-$version.zip"
-          Compress-Archive -Path $dir -DestinationPath $zip
-          $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          Compress-Archive -Path $dir -DestinationPath "release/$zip"
+          $zipHash = (Get-FileHash "release/$zip" -Algorithm SHA256).Hash
           $exeHash = (Get-FileHash "$dir/Mugetsu.exe" -Algorithm SHA256).Hash
           "Mugetsu $version"
           "zip SHA-256: $zipHash"
           "exe SHA-256: $exeHash"
           "version=$version" >> $env:GITHUB_OUTPUT
-          "zip=$zip" >> $env:GITHUB_OUTPUT
           "sha=$zipHash" >> $env:GITHUB_OUTPUT
-          "## Mugetsu $version`n`nzip SHA-256: ``$zipHash```nMugetsu.exe SHA-256: ``$exeHash``" >> $env:GITHUB_STEP_SUMMARY
+          "## Mugetsu $version (Windows)`n`nzip SHA-256: ``$zipHash```nMugetsu.exe SHA-256: ``$exeHash``" >> $env:GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v4
         with:
           name: Mugetsu-${{ steps.package.outputs.version }}
           path: package
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: release
+
+  linux:
+    # The oldest supported Ubuntu runner: the program then runs on systems from about 2022 on
+    # (it needs the C library of the system it was built on, or newer).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      sha: ${{ steps.package.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libfontconfig-dev libfreetype6-dev libssl-dev
+
+      - name: Install Rust
+        run: |
+          version=$(tr -d '[:space:]' < source/RUST_VERSION)
+          rustup toolchain install "$version" --profile minimal --no-self-update
+          rustup default "$version"
+          rustc --version
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build
+        run: bash source/build.sh
+
+      - name: Package
+        id: package
+        run: |
+          version=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs)
+          dir=package/Mugetsu
+          mkdir -p "$dir/LICENSES" release
+          cp source/build/out/Mugetsu "$dir/"
+          cp source/release-linux/* "$dir/"
+          cp source/release/LICENSES/* "$dir/LICENSES/"
+          cp LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
+          archive="Mugetsu-$version-linux.tar.gz"
+          # A tar archive keeps the program's "executable" mark (a zip wouldn't).
+          tar -C package --owner=0 --group=0 --numeric-owner -czf "release/$archive" Mugetsu
+          hash=$(sha256sum "release/$archive" | cut -d' ' -f1 | tr a-f A-F)
+          binHash=$(sha256sum "$dir/Mugetsu" | cut -d' ' -f1 | tr a-f A-F)
+          echo "Mugetsu $version"
+          echo "archive SHA-256: $hash"
+          echo "Mugetsu SHA-256: $binHash"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$hash" >> "$GITHUB_OUTPUT"
+          printf '## Mugetsu %s (Linux)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: release
+
+  release:
+    if: ${{ inputs.release }}
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
       - name: Draft release
-        if: ${{ inputs.release }}
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows.outputs.version }}
+          LINUX_VERSION: ${{ needs.linux.outputs.version }}
+          SHA: ${{ needs.windows.outputs.sha }}
+          LINUX_SHA: ${{ needs.linux.outputs.sha }}
         run: |
-          $version = '${{ steps.package.outputs.version }}'
-          $notes = "source/notes/$version.md"
-          if (-not (Test-Path $notes)) { throw "Missing release notes: $notes" }
-          $body = (Get-Content $notes -Raw).Replace('SHA_PLACEHOLDER', '${{ steps.package.outputs.sha }}')
-          Set-Content -Path notes.md -Value $body -Encoding utf8
-          gh release create "v$version" '${{ steps.package.outputs.zip }}' --draft --title "Mugetsu $version" --notes-file notes.md --target $env:GITHUB_SHA
+          if [ "$VERSION" != "$LINUX_VERSION" ]; then
+            echo "Windows ($VERSION) and Linux ($LINUX_VERSION) versions differ"; exit 1
+          fi
+          notes="source/notes/$VERSION.md"
+          if [ ! -f "$notes" ]; then echo "Missing release notes: $notes"; exit 1; fi
+          # LINUX_SHA_PLACEHOLDER first: it contains SHA_PLACEHOLDER.
+          sed -e "s/LINUX_SHA_PLACEHOLDER/$LINUX_SHA/g" -e "s/SHA_PLACEHOLDER/$SHA/g" "$notes" > notes.md
+          gh release create "v$VERSION" release/* --draft --title "Mugetsu $VERSION" --notes-file notes.md --target "$GITHUB_SHA"

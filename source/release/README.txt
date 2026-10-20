@@ -94,8 +94,9 @@ Notes
 Licenses
 --------
 Mugetsu is a modified build of Ruffle (dual-licensed MIT / Apache-2.0) using modified
-wgpu-core and wgpu-hal (MIT / Apache-2.0) and gc-arena (MIT / CC0). Mugetsu's own changes
-are licensed under the GNU General Public License 3.0, and its source code is published at
+wgpu-core and wgpu-hal (MIT / Apache-2.0), gc-arena (MIT / CC0), and lyon_path and
+lyon_algorithms (MIT / Apache-2.0). Mugetsu's own changes are licensed under the GNU
+General Public License 3.0, and its source code is published at
 https://github.com/mugetsu-aqw/mugetsu/tree/main/source (each release is built from it by
 GitHub). The license texts are in the LICENSES folder, and the notices and license texts
 of all other included libraries and fonts are in THIRD-PARTY-NOTICES.txt.

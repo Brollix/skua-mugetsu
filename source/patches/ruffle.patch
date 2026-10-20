@@ -2293,7 +2293,7 @@ index 54f495949..b4841be8d 100644
  
      /// Calculate and return the [`TextSelection`] at the given position
 diff --git a/core/src/display_object/graphic.rs b/core/src/display_object/graphic.rs
-index 8b139136b..7002f1c4c 100644
+index 8b139136b..57ce4b33b 100644
 --- a/core/src/display_object/graphic.rs
 +++ b/core/src/display_object/graphic.rs
 @@ -9,7 +9,7 @@ use crate::drawing::Drawing;
@@ -2622,7 +2622,7 @@ index 8b139136b..7002f1c4c 100644
          }
      }
  
-@@ -337,11 +454,613 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
+@@ -337,11 +454,622 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
  #[collect(require_static)]
  struct GraphicShared {
      id: CharacterId,
@@ -2633,12 +2633,12 @@ index 8b139136b..7002f1c4c 100644
      edge_bounds: Rectangle<Twips>,
      movie: Arc<SwfMovie>,
 +    /// AQW build: shared with pending deferred tessellations (see `deferred_shapes`).
-     #[collect(require_static)]
--    scaled_handle: RefCell<TessellationCache>,
++    #[collect(require_static)]
 +    scaled_handle: Rc<RefCell<TessellationCache>>,
 +    /// AQW build: 9-slice scaled versions of the shape, least recently used first (see
 +    /// `Graphic::sliced_handle`).
-+    #[collect(require_static)]
+     #[collect(require_static)]
+-    scaled_handle: RefCell<TessellationCache>,
 +    sliced: RefCell<Vec<scale9::Entry>>,
 +}
 +
@@ -2767,6 +2767,15 @@ index 8b139136b..7002f1c4c 100644
 +            let mut results: HashMap<*const (), Option<ShapeHandle>> = HashMap::new();
 +            for (job, source) in jobs.iter().zip(&sources) {
 +                let handle = if source.is_some() { handles.next() } else { None };
++                // AQW build: which movie a shape drawn with some hard edges is from.
++                if ruffle_render::tessellator::take_tangled(job.shape.id) {
++                    tracing::info!(
++                        target: "ruffle_aqw_perf",
++                        "Flash-style edges: shape {} of {} has a fill whose outline crosses itself; drawn with hard edges",
++                        job.shape.id,
++                        job.movie.url()
++                    );
++                }
 +                job.cache
 +                    .borrow_mut()
 +                    .replace(&job.placeholder, handle.clone());
@@ -5389,6 +5398,32 @@ index 0c50b8c58..495f9671a 100644
          fn new_empty_font<'gc>(
              context: &mut dyn LayoutContext<'gc>,
              span: &TextSpan,
+diff --git a/core/src/input.rs b/core/src/input.rs
+index 922d13ea4..78aa2b9e0 100644
+--- a/core/src/input.rs
++++ b/core/src/input.rs
+@@ -104,10 +104,21 @@ impl InputManager {
+             last_char: None,
+             last_click: None,
+             gamepad_button_mapping,
++            #[cfg(target_os = "linux")]
++            key_code_mapping_type: KeyCodeMappingType::Physical,
++            #[cfg(not(target_os = "linux"))]
+             key_code_mapping_type: KeyCodeMappingType::Logical,
+         }
+     }
+ 
++    #[cfg(target_os = "linux")]
++    pub fn clear_keys(&mut self) {
++        self.keys_down.clear();
++        self.keys_down_phys_loc.clear();
++        self.last_key = KeyCode::UNKNOWN;
++        self.last_char = None;
++    }
++
+     fn add_key(&mut self, key_code: KeyCode) {
+         self.last_key = key_code;
+         if key_code != KeyCode::UNKNOWN {
 diff --git a/core/src/lib.rs b/core/src/lib.rs
 index d76c1cba7..ff44368c8 100644
 --- a/core/src/lib.rs
@@ -5849,7 +5884,7 @@ index 74188cd5e..2bc342602 100644
      }
  
 diff --git a/core/src/player.rs b/core/src/player.rs
-index 675ef3a78..f3cc5bf4e 100644
+index 675ef3a78..c8db8b9ce 100644
 --- a/core/src/player.rs
 +++ b/core/src/player.rs
 @@ -144,6 +144,13 @@ pub struct MouseData<'gc> {
@@ -6071,7 +6106,30 @@ index 675ef3a78..f3cc5bf4e 100644
      pub fn background_color(&mut self) -> Option<Color> {
          self.mutate_with_update_context(|context| context.stage.background_color())
      }
-@@ -1315,6 +1474,18 @@ impl Player {
+@@ -1061,6 +1220,22 @@ impl Player {
+     }
+ 
+     fn handle_focus_event(&mut self, event: PlayerEvent) -> bool {
++        #[cfg(target_os = "linux")]
++        {
++            self.input.clear_keys();
++            self.mutate_with_update_context(|context| {
++                let event_name = match event {
++                    PlayerEvent::FocusLost => "deactivate",
++                    PlayerEvent::FocusGained => "activate",
++                    _ => return,
++                };
++                if let Some(stage) = context.stage.object2() {
++                    let evt = Avm2EventObject::bare_default_event(context, event_name);
++                    Avm2::dispatch_event(context, evt, stage.into());
++                }
++            });
++        }
++        #[cfg(not(target_os = "linux"))]
+         if let PlayerEvent::FocusLost = event {
+             self.mutate_with_update_context(|context| {
+                 let focus_tracker = context.focus_tracker;
+@@ -1315,6 +1490,18 @@ impl Player {
                  player_event_handled = true;
              }
  
@@ -6090,7 +6148,7 @@ index 675ef3a78..f3cc5bf4e 100644
              // Fire event listener on appropriate object
              if let Some((listener_type, event_name, args)) = listener
                  && let Some(root_clip) = context.stage.root_clip()
-@@ -1668,6 +1839,19 @@ impl Player {
+@@ -1668,6 +1855,19 @@ impl Player {
              if !skip_mouse_hover
                  && !InteractiveObject::option_ptr_eq(cur_over_object, new_over_object)
              {
@@ -6110,7 +6168,7 @@ index 675ef3a78..f3cc5bf4e 100644
                  // If the mouse button is down, the object the user clicked on grabs the focus
                  // and fires "drag" events.
                  if context.input.is_mouse_down(MouseButton::Left) {
-@@ -1806,6 +1990,9 @@ impl Player {
+@@ -1806,6 +2006,9 @@ impl Player {
                          MouseButton::Middle => ClipEvent::MiddlePress,
                          _ => unreachable!(),
                      };
@@ -6120,7 +6178,7 @@ index 675ef3a78..f3cc5bf4e 100644
                      // Pressed on a hovered object.
                      if let Some(over_object) = context.mouse_data.hovered {
                          events.push((over_object, event));
-@@ -2050,6 +2237,7 @@ impl Player {
+@@ -2050,6 +2253,7 @@ impl Player {
  
      #[instrument(level = "debug", skip_all)]
      pub fn run_frame(&mut self) {
@@ -6128,7 +6186,7 @@ index 675ef3a78..f3cc5bf4e 100644
          let frame_time = self.frame_time(750_000_000.0);
          let frame_time = Duration::from_nanos(frame_time as u64);
          let (mut execution_limit, may_execute_while_streaming) = match self.load_behavior {
-@@ -2084,10 +2272,21 @@ impl Player {
+@@ -2084,10 +2288,21 @@ impl Player {
          });
  
          self.needs_render = true;
@@ -6150,7 +6208,7 @@ index 675ef3a78..f3cc5bf4e 100644
          let invalidated = self.enter_arena(|_, gc_root, _| gc_root.stage.invalidated());
  
          if invalidated {
-@@ -2099,11 +2298,26 @@ impl Player {
+@@ -2099,11 +2314,26 @@ impl Player {
  
          let mut background_color = Color::WHITE;
  
@@ -6177,7 +6235,7 @@ index 675ef3a78..f3cc5bf4e 100644
                  renderer: this.renderer.deref_mut(),
                  commands: CommandList::new(),
                  cache_draws: &mut cache_draws,
-@@ -2116,7 +2330,23 @@ impl Player {
+@@ -2116,7 +2346,23 @@ impl Player {
                  stage,
              };
  
@@ -6202,7 +6260,7 @@ index 675ef3a78..f3cc5bf4e 100644
  
              #[cfg(feature = "egui")]
              {
-@@ -2125,6 +2355,13 @@ impl Player {
+@@ -2125,6 +2371,13 @@ impl Player {
                      .draw_debug_rects(&mut render_context, gc_root.dynamic_root);
              }
  
@@ -6216,7 +6274,7 @@ index 675ef3a78..f3cc5bf4e 100644
              background_color =
                  if stage.window_mode() != WindowMode::Transparent || stage.is_fullscreen() {
                      stage.background_color().unwrap_or(Color::WHITE)
-@@ -2139,6 +2376,8 @@ impl Player {
+@@ -2139,6 +2392,8 @@ impl Player {
              (cache_draws, commands)
          });
  
@@ -6225,7 +6283,7 @@ index 675ef3a78..f3cc5bf4e 100644
          self.renderer
              .submit_frame(background_color, commands, cache_draws);
  
-@@ -2440,11 +2679,58 @@ impl Player {
+@@ -2440,11 +2695,58 @@ impl Player {
          self.update_mouse_state(EnumSet::empty(), false, &mut false);
  
          // GC
@@ -6285,7 +6343,7 @@ index 675ef3a78..f3cc5bf4e 100644
      pub fn flush_shared_objects(&mut self) {
          self.update(|context| {
              if let Some(mut avm1_activation) =
-@@ -2980,6 +3266,7 @@ impl PlayerBuilder {
+@@ -2980,6 +3282,7 @@ impl PlayerBuilder {
          };
  
          let data = GcRootData {
@@ -6293,7 +6351,7 @@ index 675ef3a78..f3cc5bf4e 100644
              audio_manager: AudioManager::new(),
              action_queue: ActionQueue::new(),
              avm1,
-@@ -3002,6 +3289,8 @@ impl PlayerBuilder {
+@@ -3002,6 +3305,8 @@ impl PlayerBuilder {
                  middle_pressed: None,
                  forced_cursor: None,
                  updating_drop_target: false,
@@ -6302,7 +6360,7 @@ index 675ef3a78..f3cc5bf4e 100644
              },
              avm1_shared_objects: HashMap::new(),
              avm2_shared_objects: HashMap::new(),
-@@ -3085,6 +3374,8 @@ impl PlayerBuilder {
+@@ -3085,6 +3390,8 @@ impl PlayerBuilder {
                  frame_phase: Default::default(),
                  frame_accumulator: FloatDuration::ZERO,
                  recent_run_frame_timings: VecDeque::with_capacity(10),
@@ -6311,7 +6369,7 @@ index 675ef3a78..f3cc5bf4e 100644
                  start_time: Instant::now(),
                  time_offset: 0,
                  time_til_next_timer: None,
-@@ -3252,6 +3543,7 @@ fn run_mouse_pick<'gc>(
+@@ -3252,6 +3559,7 @@ fn run_mouse_pick<'gc>(
      context: &mut UpdateContext<'gc>,
      require_button_mode: bool,
  ) -> Option<InteractiveObject<'gc>> {
@@ -6319,7 +6377,7 @@ index 675ef3a78..f3cc5bf4e 100644
      context.stage.iter_render_list().rev().find_map(|level| {
          level.as_interactive().and_then(|l| {
              if l.as_displayobject().movie().is_action_script_3() {
-@@ -3320,3 +3612,148 @@ pub enum PlayerMode {
+@@ -3320,3 +3628,148 @@ pub enum PlayerMode {
      /// Represents the debug version of Flash Player, i.e. flashplayerdebugger.
      Debug,
  }
@@ -6833,7 +6891,7 @@ index cacd85384..bed41fdf5 100644
              // The entry is already the most recently used, so we can return its handle directly.
              return self.entries[index]
 diff --git a/desktop/Cargo.toml b/desktop/Cargo.toml
-index 37faf2570..98eaf83a0 100644
+index 37faf2570..a011c9472 100644
 --- a/desktop/Cargo.toml
 +++ b/desktop/Cargo.toml
 @@ -12,6 +12,10 @@ workspace = true
@@ -6883,8 +6941,8 @@ index 37faf2570..98eaf83a0 100644
 +CompanyName = "Mugetsu"
 +LegalCopyright = "Mugetsu; based on Ruffle, Copyright © 2018 Ruffle LLC and Ruffle contributors"
 +# Keep equal to `mugetsu::VERSION` (desktop/src/mugetsu.rs).
-+ProductVersion = "1.5.0"
-+FileVersion = "1.5.0 (Ruffle 0.7.0-nightly.2026.10.2)"
++ProductVersion = "1.5.1"
++FileVersion = "1.5.1 (Ruffle 0.7.0-nightly.2026.10.2)"
  # InternalName should be the same as the module name
  InternalName = "ruffle_desktop"
 -OriginalFilename = "ruffle.exe"
@@ -8611,7 +8669,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index a3410740e..c4f151173 100644
+index a3410740e..f26876886 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
 @@ -15,7 +15,7 @@ use ruffle_core::swf::HeaderExt;
@@ -9092,7 +9150,25 @@ index a3410740e..c4f151173 100644
              }
              WindowEvent::DroppedFile(file) => {
                  if let Some(content_descriptor) = ContentDescriptor::new_local(&file, None) {
-@@ -140,6 +554,9 @@ impl MainWindow {
+@@ -130,9 +544,17 @@ impl MainWindow {
+                 }
+             }
+             WindowEvent::Focused(true) => {
++                #[cfg(target_os = "linux")]
++                {
++                    self.modifiers = Default::default();
++                }
+                 self.player.handle_event(PlayerEvent::FocusGained);
+             }
+             WindowEvent::Focused(false) => {
++                #[cfg(target_os = "linux")]
++                {
++                    self.modifiers = Default::default();
++                }
+                 self.player.handle_event(PlayerEvent::FocusLost);
+             }
+             WindowEvent::MouseInput { button, state, .. } => {
+@@ -140,6 +562,9 @@ impl MainWindow {
                      return;
                  }
  
@@ -9102,7 +9178,7 @@ index a3410740e..c4f151173 100644
                  use ruffle_core::events::MouseButton as RuffleMouseButton;
                  use winit::event::MouseButton;
                  let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
-@@ -166,6 +583,8 @@ impl MainWindow {
+@@ -166,6 +591,8 @@ impl MainWindow {
                      // Show context menu.
                      if let Some(mut player) = self.player.get() {
                          let context_menu = player.prepare_context_menu();
@@ -9111,7 +9187,7 @@ index a3410740e..c4f151173 100644
  
                          // MouseUp event will be ignored when the context menu is shown,
                          // but it has to be dispatched when the menu closes.
-@@ -174,7 +593,7 @@ impl MainWindow {
+@@ -174,7 +601,7 @@ impl MainWindow {
                              y,
                              button: RuffleMouseButton::Right,
                          };
@@ -9120,7 +9196,7 @@ index a3410740e..c4f151173 100644
                      }
                  }
                  self.check_redraw();
-@@ -203,6 +622,7 @@ impl MainWindow {
+@@ -203,6 +630,7 @@ impl MainWindow {
                  }
              }
              WindowEvent::CursorLeft { .. } => {
@@ -9128,7 +9204,7 @@ index a3410740e..c4f151173 100644
                  if let Some(mut player) = self.player.get() {
                      player.set_mouse_in_stage(false);
                  }
-@@ -267,6 +687,56 @@ impl MainWindow {
+@@ -267,6 +695,56 @@ impl MainWindow {
          }
      }
  
@@ -9185,7 +9261,7 @@ index a3410740e..c4f151173 100644
      fn on_metadata(&mut self, swf_header: HeaderExt) {
          let height_offset = if self.gui.window().fullscreen().is_some() || self.no_gui {
              0.0
-@@ -389,21 +859,171 @@ impl MainWindow {
+@@ -389,21 +867,171 @@ impl MainWindow {
          // We should look at changing our tick to happen somewhere else if we see any behavioural problems.
          if matches!(self.loaded, LoadingState::Loaded) {
              let new_time = Instant::now();
@@ -9358,7 +9434,7 @@ index a3410740e..c4f151173 100644
              self.gui.window().request_redraw();
          }
      }
-@@ -429,6 +1049,9 @@ macro_rules! enter_runtime {
+@@ -429,6 +1057,9 @@ macro_rules! enter_runtime {
  impl App {
      pub fn new(preferences: GlobalPreferences) -> Result<(Self, EventLoop<RuffleEvent>), Error> {
          let event_loop = EventLoop::with_user_event().build()?;
@@ -9368,7 +9444,7 @@ index a3410740e..c4f151173 100644
  
          let mut font_database = fontdb::Database::default();
          font_database.load_system_fonts();
-@@ -461,9 +1084,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -461,9 +1092,10 @@ impl ApplicationHandler<RuffleEvent> for App {
  
          if cause == StartCause::Init {
              let movie_url = self.preferences.cli.movie_url.clone();
@@ -9381,7 +9457,7 @@ index a3410740e..c4f151173 100644
  
              let no_gui = self.preferences.cli.no_gui;
              let min_window_size = if no_gui {
-@@ -479,7 +1103,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -479,7 +1111,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
              let mut window_attributes = WindowAttributes::default()
                  .with_visible(false)
@@ -9390,7 +9466,7 @@ index a3410740e..c4f151173 100644
                  .with_window_icon(Some(icon))
                  .with_min_inner_size(min_window_size);
  
-@@ -560,10 +1184,26 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -560,10 +1192,26 @@ impl ApplicationHandler<RuffleEvent> for App {
                  minimized: false,
                  occluded: false,
                  mouse_pos: PhysicalPosition::new(0.0, 0.0),
@@ -9417,7 +9493,7 @@ index a3410740e..c4f151173 100644
              });
          }
      }
-@@ -586,6 +1226,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -586,6 +1234,10 @@ impl ApplicationHandler<RuffleEvent> for App {
                  }
              }
  
@@ -9428,7 +9504,7 @@ index a3410740e..c4f151173 100644
              (Some(main_window), RuffleEvent::BrowseAndOpen(options, open_type)) => {
                  let event_loop = main_window.event_loop_proxy.clone();
                  let picker = main_window.gui.file_picker();
-@@ -619,7 +1263,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -619,7 +1271,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              }
  
              (Some(main_window), RuffleEvent::CloseFile) => {
@@ -9437,7 +9513,7 @@ index a3410740e..c4f151173 100644
                  main_window.gui.close_movie(&mut main_window.player);
              }
  
-@@ -702,18 +1346,28 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -702,18 +1354,28 @@ impl ApplicationHandler<RuffleEvent> for App {
              // only place where we're setting control flow, and events cancel wait.
              // Note: the control flow might be set to `ControlFlow::WaitUntil` with a
              // timestamp in the past! Take that into consideration when changing this code.
@@ -9468,7 +9544,7 @@ index a3410740e..c4f151173 100644
  
          // Manually stop the tokio runtime: this makes sure that any pending Player-bound futures
          // are properly cancelled and put back on the winit event loop before it closes, preventing
-@@ -721,6 +1375,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -721,6 +1383,7 @@ impl ApplicationHandler<RuffleEvent> for App {
          if let Some(runtime) = self.runtime.take() {
              runtime.shutdown_timeout(std::time::Duration::from_secs(1));
          }
@@ -9476,7 +9552,7 @@ index a3410740e..c4f151173 100644
      }
  }
  
-@@ -729,3 +1384,17 @@ enum LoadingState {
+@@ -729,3 +1392,17 @@ enum LoadingState {
      WaitingForResize,
      Loaded,
  }
@@ -9678,16 +9754,21 @@ index 9e739a209..13be623d4 100644
      OpenDialog(DialogDescriptor),
  
 diff --git a/desktop/src/gui.rs b/desktop/src/gui.rs
-index df77233da..1ad4d8138 100644
+index df77233da..bed4d7641 100644
 --- a/desktop/src/gui.rs
 +++ b/desktop/src/gui.rs
-@@ -1,4 +1,4 @@
+@@ -1,8 +1,9 @@
 -mod context_menu;
 +pub(crate) mod context_menu;
  mod controller;
  pub mod dialogs;
  mod locale;
-@@ -142,10 +142,11 @@ impl RuffleGui {
+ mod menu_bar;
++mod mugetsu_menu;
+ mod movie;
+ mod picker;
+ mod theme;
+@@ -142,10 +143,11 @@ impl RuffleGui {
      pub fn show_context_menu(
          &mut self,
          menu: Vec<ruffle_core::ContextMenuItem>,
@@ -9702,7 +9783,7 @@ index df77233da..1ad4d8138 100644
      }
  
 diff --git a/desktop/src/gui/context_menu.rs b/desktop/src/gui/context_menu.rs
-index 851e57101..89c2c59e0 100644
+index 851e57101..6979814c2 100644
 --- a/desktop/src/gui/context_menu.rs
 +++ b/desktop/src/gui/context_menu.rs
 @@ -1,7 +1,9 @@
@@ -9750,7 +9831,7 @@ index 851e57101..89c2c59e0 100644
          let mut item_clicked = false;
          self.position = self.position.or(egui_ctx.pointer_latest_pos());
  
-@@ -92,6 +104,317 @@ impl ContextMenu {
+@@ -92,6 +104,322 @@ impl ContextMenu {
  
          !should_close
      }
@@ -9857,16 +9938,7 @@ index 851e57101..89c2c59e0 100644
 +                        if settings.graphics_choice {
 +                            ui.add_space(4.0 * z);
 +                            row_title(ui, z, "Graphics API", "Changing it restarts Mugetsu");
-+                            #[cfg(target_os = "linux")]
-+                            let (options, values): (&[&str], &[Option<Graphics>]) = (
-+                                &["Auto", "Vulkan", "OpenGL"],
-+                                &[None, Some(Graphics::Vulkan), Some(Graphics::Gl)],
-+                            );
-+                            #[cfg(not(target_os = "linux"))]
-+                            let (options, values): (&[&str], &[Option<Graphics>]) = (
-+                                &["Auto", "Vulkan", "DirectX 12"],
-+                                &[None, Some(Graphics::Vulkan), Some(Graphics::Dx12)],
-+                            );
++                            let (options, values) = graphics_options();
 +                            let current = values
 +                                .iter()
 +                                .position(|&g| g == settings.graphics)
@@ -9918,6 +9990,20 @@ index 851e57101..89c2c59e0 100644
 +pub(crate) const ACCENT: Color32 = Color32::from_rgb(124, 108, 240);
 +pub(crate) const TEXT: Color32 = Color32::from_rgb(232, 234, 242);
 +pub(crate) const MUTED: Color32 = Color32::from_rgb(140, 146, 166);
++
++/// The graphics API choices on this system, and the values they stand for.
++pub(crate) fn graphics_options() -> (&'static [&'static str], &'static [Option<Graphics>]) {
++    #[cfg(target_os = "linux")]
++    return (
++        &["Auto", "Vulkan", "OpenGL"],
++        &[None, Some(Graphics::Vulkan), Some(Graphics::Gl)],
++    );
++    #[cfg(not(target_os = "linux"))]
++    return (
++        &["Auto", "Vulkan", "DirectX 12"],
++        &[None, Some(Graphics::Vulkan), Some(Graphics::Dx12)],
++    );
++}
 +
 +pub(crate) fn panel_style(style: &mut Style) {
 +    style.visuals.override_text_color = Some(TEXT);
@@ -10313,24 +10399,114 @@ index 2383b2dde..e79d1f30f 100644
 +    3
 +}
 diff --git a/desktop/src/gui/menu_bar.rs b/desktop/src/gui/menu_bar.rs
-index 6a535bae0..1aa1f3354 100644
+index 6a535bae0..206651f58 100644
 --- a/desktop/src/gui/menu_bar.rs
 +++ b/desktop/src/gui/menu_bar.rs
 @@ -196,6 +196,8 @@ impl MenuBar {
                          ui.close();
                      }
                  });
-+                #[cfg(target_os = "linux")]
-+                crate::linux::graphics_menu::menu_button(ui);
++                // AQW build: Mugetsu's settings.
++                super::mugetsu_menu::menu_button(ui, &self.event_loop);
              });
          });
      }
+diff --git a/desktop/src/gui/mugetsu_menu.rs b/desktop/src/gui/mugetsu_menu.rs
+new file mode 100644
+index 000000000..d7f8c646c
+--- /dev/null
++++ b/desktop/src/gui/mugetsu_menu.rs
+@@ -0,0 +1,84 @@
++//! AQW build (Mugetsu): the right-click menu's settings as a "Mugetsu" menu in Ruffle's menu
++//! bar (shown with --gui). Changes go through the same events as the right-click menu, so
++//! they're applied the same way.
++
++use crate::custom_event::RuffleEvent;
++use crate::gui::context_menu::*;
++use crate::mugetsu::{MenuSettings, Setting, VERSION};
++use egui::*;
++use winit::event_loop::EventLoopProxy;
++
++pub fn contents(ui: &mut Ui, event_loop: &EventLoopProxy<RuffleEvent>) {
++    let send = |setting| {
++        let _ = event_loop.send_event(RuffleEvent::MugetsuSetting(setting));
++    };
++    let settings = MenuSettings::now();
++    panel_style(ui.style_mut());
++    let z = 1.0;
++    ui.set_width(WIDTH * z);
++    ui.spacing_mut().item_spacing = vec2(0.0, 2.0 * z);
++
++    // Header.
++    let (rect, _) = ui.allocate_exact_size(vec2(WIDTH * z, 24.0 * z), Sense::hover());
++    ui.painter().text(
++        pos2(rect.left() + 4.0 * z, rect.center().y),
++        Align2::LEFT_CENTER,
++        "Mugetsu",
++        FontId::proportional(16.0 * z),
++        TEXT,
++    );
++    ui.painter().text(
++        pos2(rect.right() - 4.0 * z, rect.center().y),
++        Align2::RIGHT_CENTER,
++        format!("v{VERSION}"),
++        FontId::proportional(12.0 * z),
++        MUTED,
++    );
++    ui.add_space(4.0 * z);
++
++    section(ui, z, "GRAPHICS");
++    row_title(ui, z, "Edge smoothing", "Flash-style is lighter on laptops");
++    if let Some(choice) = segmented(
++        ui,
++        z,
++        "edges_gui",
++        &["Flash-style", "MSAA"],
++        if settings.flash_edges { 0 } else { 1 },
++    ) {
++        send(Setting::FlashEdges(choice == 0));
++    }
++    ui.add_space(6.0 * z);
++    if toggle_row(
++        ui,
++        z,
++        "Frame interpolation",
++        "Smoother motion, best on strong PCs",
++        settings.interpolation,
++    ) {
++        send(Setting::Interpolation(!settings.interpolation));
++    }
++    if settings.graphics_choice {
++        ui.add_space(4.0 * z);
++        row_title(ui, z, "Graphics API", "Changing it restarts Mugetsu");
++        let (options, values) = graphics_options();
++        let current = values.iter().position(|&g| g == settings.graphics).unwrap_or(0);
++        if let Some(choice) = segmented(ui, z, "graphics_gui", options, current) {
++            send(Setting::Graphics(values[choice]));
++        }
++    }
++
++    section(ui, z, "DISPLAY");
++    if toggle_row(ui, z, "Show FPS", "A small counter in the corner", settings.show_fps) {
++        send(Setting::ShowFps(!settings.show_fps));
++    }
++
++    section(ui, z, "HELP");
++    if action_row(ui, z, "Open log folder", Some("↗")).clicked() {
++        send(Setting::OpenLogFolder);
++        ui.close();
++    }
++}
++
++pub fn menu_button(ui: &mut Ui, event_loop: &EventLoopProxy<RuffleEvent>) {
++    ui.menu_button("Mugetsu", |ui| contents(ui, event_loop));
++}
 diff --git a/desktop/src/linux.rs b/desktop/src/linux.rs
 new file mode 100644
-index 000000000..38c5b1933
+index 000000000..d9b2c51ff
 --- /dev/null
 +++ b/desktop/src/linux.rs
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,36 @@
 +//! AQW build (Mugetsu): Linux process restart and graphics selection.
 +
 +use crate::mugetsu::{self, Graphics};
@@ -10367,104 +10543,8 @@ index 000000000..38c5b1933
 +    start_again();
 +    std::process::exit(0);
 +}
-+
-+/// Mugetsu: "Graphics" choices and settings in the Linux menu bar (when --gui is used).
-+pub mod graphics_menu {
-+    use super::*;
-+    use crate::gui::context_menu::*;
-+    use egui::*;
-+
-+    fn choose(choice: Option<Graphics>) {
-+        if choice == mugetsu::saved_graphics() {
-+            return;
-+        }
-+        let name = choice.map_or("Automatic", Graphics::name);
-+        mugetsu::save_graphics(choice);
-+        tracing::info!("Graphics changed to {name}; starting Mugetsu again");
-+        super::start_again();
-+        std::process::exit(0);
-+    }
-+
-+    pub fn contents(ui: &mut Ui) {
-+        panel_style(ui.style_mut());
-+        let z = 1.0;
-+        ui.set_width(WIDTH * z);
-+        ui.spacing_mut().item_spacing = vec2(0.0, 2.0 * z);
-+
-+        // Header.
-+        let (rect, _) = ui.allocate_exact_size(vec2(WIDTH * z, 24.0 * z), Sense::hover());
-+        ui.painter().text(
-+            pos2(rect.left() + 4.0 * z, rect.center().y),
-+            Align2::LEFT_CENTER,
-+            "Mugetsu",
-+            FontId::proportional(16.0 * z),
-+            TEXT,
-+        );
-+        ui.painter().text(
-+            pos2(rect.right() - 4.0 * z, rect.center().y),
-+            Align2::RIGHT_CENTER,
-+            format!("v{}", crate::mugetsu::VERSION),
-+            FontId::proportional(12.0 * z),
-+            MUTED,
-+        );
-+        ui.add_space(4.0 * z);
-+
-+        section(ui, z, "GRAPHICS");
-+        row_title(ui, z, "Edge smoothing", "Flash-style is lighter on laptops");
-+        let flash_edges = mugetsu::saved_flash_edges().unwrap_or(true);
-+        if let Some(choice) = segmented(
-+            ui,
-+            z,
-+            "edges_gui",
-+            &["Flash-style", "MSAA"],
-+            if flash_edges { 0 } else { 1 },
-+        ) {
-+            let on = choice == 0;
-+            ruffle_render::tessellator::set_flash_aa(on);
-+            mugetsu::save_flash_edges(on);
-+        }
-+        ui.add_space(6.0 * z);
-+        let interpolation = ruffle_core::frame_interpolation::enabled();
-+        if toggle_row(
-+            ui,
-+            z,
-+            "Frame interpolation",
-+            "Smoother motion, best on strong PCs",
-+            interpolation,
-+        ) {
-+            let on = !interpolation;
-+            ruffle_core::frame_interpolation::set_enabled(on);
-+            mugetsu::save_interpolation(on);
-+        }
-+        ui.add_space(4.0 * z);
-+        row_title(ui, z, "Graphics API", "Changing it restarts Mugetsu");
-+        let current_graphics = mugetsu::saved_graphics();
-+        let options = &["Auto", "Vulkan", "OpenGL"];
-+        let values = &[None, Some(Graphics::Vulkan), Some(Graphics::Gl)];
-+        let current_idx = values.iter().position(|&g| g == current_graphics).unwrap_or(0);
-+        if let Some(choice) = segmented(ui, z, "graphics_gui", options, current_idx) {
-+            choose(values[choice]);
-+        }
-+
-+        section(ui, z, "DISPLAY");
-+        let show_fps = mugetsu::show_fps();
-+        if toggle_row(ui, z, "Show FPS", "A small counter in the corner", show_fps) {
-+            mugetsu::set_show_fps(!show_fps);
-+        }
-+
-+        section(ui, z, "HELP");
-+        if action_row(ui, z, "Open log folder", Some("↗")).clicked() {
-+            mugetsu::open_log_folder();
-+            ui.close();
-+        }
-+    }
-+
-+    pub fn menu_button(ui: &mut Ui) {
-+        ui.menu_button("Mugetsu", contents);
-+    }
-+}
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 2265dc24c..4e04692b5 100644
+index 2265dc24c..91a3223d3 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
 @@ -13,11 +13,14 @@ mod custom_event;
@@ -10792,8 +10872,8 @@ index 2265dc24c..4e04692b5 100644
 +    #[cfg(windows)]
 +    windows::install_crash_handler();
 +
-+    // AQW (since its 2026-10-10 update) and its private-server copies use Flash APIs newer
-+    // than their loader's SWF version; show them to every movie.
++    // AQW (since its 2026-10-10 update) uses Flash APIs newer than its loader's SWF version;
++    // show them to every movie.
 +    ruffle_core::set_show_all_apis(true);
  
      #[cfg(windows)]
@@ -10865,7 +10945,7 @@ index 2265dc24c..4e04692b5 100644
      });
 diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
 new file mode 100644
-index 000000000..4ba1ff8f3
+index 000000000..53eb549ed
 --- /dev/null
 +++ b/desktop/src/mugetsu.rs
 @@ -0,0 +1,770 @@
@@ -10881,7 +10961,7 @@ index 000000000..4ba1ff8f3
 +
 +/// Mugetsu's own version. Keep it equal to `ProductVersion` in desktop/Cargo.toml
 +/// ([package.metadata.winresource]) and to the GitHub release tag (`v1.1.1`).
-+pub const VERSION: &str = "1.5.0";
++pub const VERSION: &str = "1.5.1";
 +
 +const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
 +const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
@@ -12263,7 +12343,7 @@ index ea347fc2b..bcb1991f4 100644
              Filter::BlurFilter(filter) => filter.calculate_dest_rect(source_rect),
              Filter::GlowFilter(filter) => filter.calculate_dest_rect(source_rect),
 diff --git a/render/src/tessellator.rs b/render/src/tessellator.rs
-index 55d6bc843..85f513902 100644
+index 55d6bc843..5b2daf4f1 100644
 --- a/render/src/tessellator.rs
 +++ b/render/src/tessellator.rs
 @@ -1,3 +1,4 @@
@@ -12271,7 +12351,7 @@ index 55d6bc843..85f513902 100644
  use crate::bitmap::BitmapSource;
  use crate::shape_utils::{DistilledShape, DrawCommand, DrawPath, GradientType};
  use indexmap::IndexSet;
-@@ -22,6 +23,66 @@ pub struct ShapeTessellator {
+@@ -22,6 +23,93 @@ pub struct ShapeTessellator {
  
  const TESSELLATION_EPSILON: f32 = 0.0000001;
  
@@ -12313,6 +12393,33 @@ index 55d6bc843..85f513902 100644
 +    edge_mode() != EdgeMode::Off
 +}
 +
++/// AQW build: shapes with a fill drawn with hard edges, as its outline crosses itself or
++/// another of its loops (see `edge_aa::centered_fill`), for the log: their ids, until taken.
++static TANGLED_SHAPES: std::sync::Mutex<Vec<swf::CharacterId>> = std::sync::Mutex::new(Vec::new());
++
++fn note_tangled(id: swf::CharacterId) {
++    if let Ok(mut ids) = TANGLED_SHAPES.lock()
++        && !ids.contains(&id)
++        && ids.len() < 64
++    {
++        ids.push(id);
++    }
++}
++
++/// Whether shape `id` had such a fill since last asked (then forgets it).
++pub fn take_tangled(id: swf::CharacterId) -> bool {
++    let Ok(mut ids) = TANGLED_SHAPES.lock() else {
++        return false;
++    };
++    match ids.iter().position(|&i| i == id) {
++        Some(index) => {
++            ids.swap_remove(index);
++            true
++        }
++        None => false,
++    }
++}
++
 +/// AQW build: whether Flash-style edge smoothing replaces MSAA: `RUFFLE_FLASH_AA` at start,
 +/// or `set_flash_aa` (Mugetsu's settings). 0 = not read yet, 1 = off, 2 = on.
 +static FLASH_AA: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -12338,7 +12445,7 @@ index 55d6bc843..85f513902 100644
  impl ShapeTessellator {
      pub fn new() -> Self {
          Self {
-@@ -44,18 +105,57 @@ impl ShapeTessellator {
+@@ -44,18 +132,58 @@ impl ShapeTessellator {
          self.tessellate_shape_with_scale(shape, bitmap_source, 1.0)
      }
  
@@ -12385,6 +12492,7 @@ index 55d6bc843..85f513902 100644
 +            Default::default()
 +        };
 +
++        let shape_id = shape.id;
 +        for (path_index, path) in shape.paths.into_iter().enumerate() {
 +            // AQW build: whether this path's edges are soft (see `EdgeMode`).
 +            let edge_aa_on = edge_aa_on
@@ -12398,7 +12506,7 @@ index 55d6bc843..85f513902 100644
              let (fill_style, lyon_path, next_is_stroke) = match &path {
                  DrawPath::Fill {
                      style,
-@@ -162,14 +262,37 @@ impl ShapeTessellator {
+@@ -162,14 +290,43 @@ impl ShapeTessellator {
  
              let mut buffers_builder =
                  BuffersBuilder::new(&mut self.lyon_mesh, RuffleVertexCtor { color });
@@ -12409,14 +12517,20 @@ index 55d6bc843..85f513902 100644
 +                    commands,
 +                    winding_rule,
 +                    ..
-+                } if edge_aa_on => edge_aa::centered_fill(
-+                    commands,
-+                    &shared_edges,
-+                    path_index,
-+                    (*winding_rule).into(),
-+                    scale,
-+                    &squash,
-+                ),
++                } if edge_aa_on => {
++                    let centered = edge_aa::centered_fill(
++                        commands,
++                        &shared_edges,
++                        path_index,
++                        (*winding_rule).into(),
++                        scale,
++                        &squash,
++                    );
++                    if edge_aa::TANGLED.with(|t| t.replace(false)) {
++                        note_tangled(shape_id);
++                    }
++                    centered
++                }
 +                _ => None,
 +            };
              let result = match path {
@@ -12439,7 +12553,7 @@ index 55d6bc843..85f513902 100644
                              .with_tolerance(tolerance),
                          &mut buffers_builder,
                      )
-@@ -178,15 +301,22 @@ impl ShapeTessellator {
+@@ -178,15 +335,22 @@ impl ShapeTessellator {
                      // This calculation ensures that hairline strokes are rendered with
                      // a minimum width of 1 pixel, while still allowing for proper scaling
                      let width = style.width().to_pixels() as f32;
@@ -12465,7 +12579,7 @@ index 55d6bc843..85f513902 100644
                      let mut stroke_options = StrokeOptions::default()
                          .with_line_width(width)
                          .with_tolerance(tolerance)
-@@ -216,13 +346,61 @@ impl ShapeTessellator {
+@@ -216,13 +380,61 @@ impl ShapeTessellator {
                          }
                      };
                      stroke_options = stroke_options.with_line_join(line_join);
@@ -12532,7 +12646,7 @@ index 55d6bc843..85f513902 100644
              match result {
                  Ok(_) => {
                      if needs_flush {
-@@ -433,6 +611,946 @@ fn ruffle_path_to_lyon_path(commands: &[DrawCommand], is_closed: bool) -> Path {
+@@ -433,6 +645,1040 @@ fn ruffle_path_to_lyon_path(commands: &[DrawCommand], is_closed: bool) -> Path {
      builder.build()
  }
  
@@ -12586,6 +12700,13 @@ index 55d6bc843..85f513902 100644
 +
 +        fn undo(&self, p: Point) -> Point {
 +            Self::map(&self.from, p)
++        }
++
++        /// How much farther a stroke reaches in direction `v` (a unit vector here) than in
++        /// the shape: a stroke is round in the shape, and squashed into an ellipse here.
++        fn widen(&self, v: Vector) -> f32 {
++            let p = Self::map(&self.to, Point::new(v.x, v.y));
++            p.x.hypot(p.y)
 +        }
 +
 +        /// Maps the vertices pushed since `start` back to the shape.
@@ -12976,8 +13097,14 @@ index 55d6bc843..85f513902 100644
 +        }
 +    }
 +
++    thread_local! {
++        /// Set when `centered_fill` finds a fill it can't move (see there).
++        pub static TANGLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    }
++
 +    /// The outline of a fill moved for centered soft edges (see `Side`), or `None` where that
-+    /// can't be done cleanly (parts thinner than a pixel): then the outer-only fade is used.
++    /// can't be done cleanly (a fill whose outline crosses itself): then the outer-only fade
++    /// is used.
 +    pub fn centered_fill(
 +        commands: &[DrawCommand],
 +        shared: &Shared,
@@ -13068,8 +13195,53 @@ index 55d6bc843..85f513902 100644
 +            /// Turned inside out by moving: thinner than a pixel.
 +            all_thin: bool,
 +        }
-+        // Which side of each ring is inside: tested just beside the middle of its longest edge.
-+        let probes: Vec<Point> = rings
++        // Which side of each ring is inside: tested just beside the middle of each edge, on
++        // both sides; where the fill is on one side only (not on an edge between two rings of
++        // the fill), that side gets the edge's length as a vote. (A single test beside the
++        // longest edge could land outside a thin part, turning the whole ring the wrong way:
++        // it was then left out, a hole in the fill.)
++        let mut side_probes = Vec::new();
++        let mut side_edges = Vec::new();
++        for (r, (points, _)) in rings.iter().enumerate() {
++            let n = points.len();
++            for i in 0..n {
++                let (a, b) = (points[i], points[(i + 1) % n]);
++                let length = (b - a).length();
++                if length < width * 0.25 {
++                    continue;
++                }
++                let (middle, beside) = (a.lerp(b, 0.5), left_normal(a, b) * (width * 0.25));
++                side_probes.push(middle + beside);
++                side_probes.push(middle - beside);
++                side_edges.push((r, length));
++            }
++        }
++        let side_windings = windings_at(&rings, &side_probes);
++        // (Left, right) votes per ring.
++        let mut votes = vec![(0.0f32, 0.0f32); rings.len()];
++        for (k, &(r, length)) in side_edges.iter().enumerate() {
++            let left = fill_rule.is_in(side_windings[2 * k]);
++            let right = fill_rule.is_in(side_windings[2 * k + 1]);
++            if left && !right {
++                votes[r].0 += length;
++            } else if right && !left {
++                votes[r].1 += length;
++            }
++        }
++        // A ring with a quarter of its length or more the other way crosses itself or another
++        // ring of this fill (overlapping loops, a figure eight): it can't be moved as a whole,
++        // as those stretches would be left out. Such a fill is drawn as it is, with plain
++        // edges. (Less than that is mostly misjudged tests at sharp corners and thin parts: in
++        // test renders against an 8x reference, drawing those fills plain was worse.)
++        if votes.iter().any(|&(left, right)| {
++            let (more, less) = (left.max(right), left.min(right));
++            less > width * 4.0 && less > more * 0.25
++        }) {
++            TANGLED.with(|t| t.set(true));
++            return None;
++        }
++        // Rings without votes (too small to test): beside the middle of the longest edge.
++        let fallback_probes: Vec<Point> = rings
 +            .iter()
 +            .map(|(points, _)| {
 +                let n = points.len();
@@ -13084,13 +13256,23 @@ index 55d6bc843..85f513902 100644
 +                a.lerp(b, 0.5) + left_normal(a, b) * (width * 0.25)
 +            })
 +            .collect();
-+        let windings = windings_at(&rings, &probes);
++        let fallback_windings = windings_at(&rings, &fallback_probes);
++        let left_inside: Vec<bool> = votes
++            .iter()
++            .zip(fallback_windings)
++            .map(|(&(left, right), winding)| {
++                if left > 0.0 || right > 0.0 {
++                    left >= right
++                } else {
++                    fill_rule.is_in(winding)
++                }
++            })
++            .collect();
 +        let rings: Vec<Ring> = rings
 +            .into_iter()
-+            .zip(windings)
-+            .map(|((points, sides), winding)| {
++            .zip(left_inside)
++            .map(|((points, sides), left_is_inside)| {
 +                let n = points.len();
-+                let left_is_inside = fill_rule.is_in(winding);
 +                let sign = if left_is_inside { -1.0 } else { 1.0 };
 +                let normal = |i: usize| left_normal(points[i], points[(i + 1) % n]) * sign;
 +                let offset = |i: usize| match sides[i] {
@@ -13340,6 +13522,10 @@ index 55d6bc843..85f513902 100644
 +        if color.a == 0 {
 +            return;
 +        }
++        // Across the line, in the shape. In a squashed shape the stroke (round in the shape)
++        // reaches farther here in some directions than others, and so does its narrowed body:
++        // the fades follow it, scaled by `widen` in each direction (else they missed the body:
++        // a gap down the middle of the line, or an extra dark band).
 +        let inner = stroke_body_width(stroke_width, scale) / 2.0;
 +        let outer = stroke_width / 2.0 + width;
 +        let fade = outer - inner;
@@ -13375,10 +13561,29 @@ index 55d6bc843..85f513902 100644
 +                    sum * (2.0 / sum.square_length())
 +                })
 +            };
++            // Where the fade lines meet at a vertex, as the offset from it per unit of width:
++            // at a shared (miter) joint, where the two segments' lines (each at its own
++            // distance, see `widen`) cross; else on segment `own`'s normal.
++            let widen_segment = |i: usize| squash.widen(normal(i));
++            let corner = |k: usize, own: usize| -> Vector {
++                let Some(miter) = joint(k) else {
++                    return normal(own) * widen_segment(own);
++                };
++                let prev = (k + n - 1) % n;
++                let (k0, k1) = (widen_segment(prev), widen_segment(k));
++                if (k0 - k1).abs() < 1e-6 {
++                    return miter * k0;
++                }
++                let (n0, n1) = (normal(prev), normal(k));
++                let det = n0.cross(n1);
++                if det.abs() < 1e-3 {
++                    return miter * ((k0 + k1) / 2.0);
++                }
++                Vector::new((k0 * n1.y - k1 * n0.y) / det, (n0.x * k1 - n1.x * k0) / det)
++            };
 +            for i in 0..segments {
 +                let j = (i + 1) % n;
-+                let own = normal(i);
-+                let (va, vb) = (joint(i).unwrap_or(own), joint(j).unwrap_or(own));
++                let (va, vb) = (corner(i, i), corner(j, i));
 +                for side in [1.0f32, -1.0] {
 +                    let (a, b) = (points[i], points[j]);
 +                    quad(
@@ -13424,11 +13629,12 @@ index 55d6bc843..85f513902 100644
 +                    let centre = points[k];
 +                    for t in 0..steps {
 +                        let (d0, d1) = (dir(t), dir(t + 1));
++                        let (k0, k1) = (squash.widen(d0), squash.widen(d1));
 +                        quad(
-+                            centre + d0 * inner,
-+                            centre + d1 * inner,
-+                            centre + d1 * outer,
-+                            centre + d0 * outer,
++                            centre + d0 * (inner * k0),
++                            centre + d1 * (inner * k1),
++                            centre + d1 * (outer * k1),
++                            centre + d0 * (outer * k0),
 +                        );
 +                    }
 +                }
@@ -13445,16 +13651,17 @@ index 55d6bc843..85f513902 100644
 +                };
 +                let normal = Vector::new(-tangent.y, tangent.x);
 +                let centre = points[end];
++                let (kn, kt) = (squash.widen(normal), squash.widen(tangent));
 +                let (cap_points, offsets): (Vec<Point>, Vec<Vector>) = match cap {
 +                    swf::LineCapStyle::None => (
-+                        vec![centre - normal * inner, centre + normal * inner],
-+                        vec![tangent * width; 2],
++                        vec![centre - normal * (inner * kn), centre + normal * (inner * kn)],
++                        vec![tangent * (width * kt); 2],
 +                    ),
 +                    swf::LineCapStyle::Square => {
-+                        let tip = centre + tangent * inner;
++                        let tip = centre + tangent * (inner * kt);
 +                        (
-+                            vec![tip - normal * inner, tip + normal * inner],
-+                            vec![tangent * fade; 2],
++                            vec![tip - normal * (inner * kn), tip + normal * (inner * kn)],
++                            vec![tangent * (fade * kt); 2],
 +                        )
 +                    }
 +                    swf::LineCapStyle::Round => (0..=8)
@@ -13462,7 +13669,8 @@ index 55d6bc843..85f513902 100644
 +                            let angle = -std::f32::consts::FRAC_PI_2
 +                                + std::f32::consts::PI * k as f32 / 8.0;
 +                            let radial = tangent * angle.cos() + normal * angle.sin();
-+                            (centre + radial * inner, radial * fade)
++                            let kr = squash.widen(radial);
++                            (centre + radial * (inner * kr), radial * (fade * kr))
 +                        })
 +                        .unzip(),
 +                };

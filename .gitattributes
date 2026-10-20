@@ -1,3 +1,6 @@
 # The patches must keep their exact bytes (line endings, binary sections), on every system.
 *.patch -text
 *.zip binary
+
+# Shell scripts run on Linux: always LF line endings.
+*.sh text eol=lf

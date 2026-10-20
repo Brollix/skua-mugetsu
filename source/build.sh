@@ -59,9 +59,6 @@ run git -C "$ruffle" -c advice.detachedHead=false checkout -q FETCH_HEAD
 
 # 2. Mugetsu's changes to Ruffle.
 run git -C "$ruffle" apply --whitespace=nowarn "$root/patches/ruffle.patch"
-if [[ -f "$root/patches/keyboard-linux.patch" ]]; then
-    run git -C "$ruffle" apply --whitespace=nowarn "$root/patches/keyboard-linux.patch"
-fi
 
 # 3. The five libraries Mugetsu changes, from crates.io, patched into ruffle/patches/.
 crates=(
@@ -82,7 +79,8 @@ for crate in "${crates[@]}"; do
         cp -a "$MUGETSU_CRATES_DIR/$full" "$dest"
     else
         archive="$work/$full.crate"
-        curl --fail --location --silent --show-error             "https://static.crates.io/crates/$name/$full.crate" -o "$archive"
+        curl --fail --location --silent --show-error \
+            "https://static.crates.io/crates/$name/$full.crate" -o "$archive"
         unpack="$work/crates"
         mkdir -p "$unpack"
         run tar -xzf "$archive" -C "$unpack"
@@ -90,7 +88,8 @@ for crate in "${crates[@]}"; do
     fi
     rm -f "$dest/.cargo_vcs_info.json"
     # From Ruffle's folder: inside a repository, git apply skips paths outside the current folder.
-    run git -C "$ruffle" apply --whitespace=nowarn -p1 "--directory=patches/$name"         "$root/patches/$name.patch"
+    run git -C "$ruffle" apply --whitespace=nowarn -p1 "--directory=patches/$name" \
+        "$root/patches/$name.patch"
 done
 
 if ((prepare_only)); then
@@ -99,8 +98,9 @@ if ((prepare_only)); then
 fi
 
 # 4. Build. x86-64-v3 (AVX2) like the released builds; paths in the program are shortened.
+# When several prefixes match, the last one given wins: most specific last.
 flags=("-Ctarget-cpu=x86-64-v3"
-    "--remap-path-prefix=$ruffle=ruffle" "--remap-path-prefix=$HOME=home")
+    "--remap-path-prefix=$HOME=home" "--remap-path-prefix=$ruffle=ruffle")
 if [[ -n "${CARGO_HOME:-}" ]]; then
     flags+=("--remap-path-prefix=$CARGO_HOME=cargo")
 fi
