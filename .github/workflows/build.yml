@@ -60,7 +60,7 @@ jobs:
           Copy-Item source/release/* $dir -Recurse -Force
           Copy-Item LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
           New-Item -ItemType Directory -Force release | Out-Null
-          $zip = "Mugetsu-$version.zip"
+          $zip = "Mugetsu-$version-windows.zip"
           Compress-Archive -Path $dir -DestinationPath "release/$zip"
           $zipHash = (Get-FileHash "release/$zip" -Algorithm SHA256).Hash
           $exeHash = (Get-FileHash "$dir/Mugetsu.exe" -Algorithm SHA256).Hash
