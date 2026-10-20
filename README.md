@@ -1,11 +1,11 @@
 # Mugetsu
 
-**A faster way to play AdventureQuest Worlds on Windows.**
+**A faster way to play AdventureQuest Worlds on Windows and Linux.**
 Crowded rooms, big fights and room changes stay at a smooth, steady frame rate.
 
 ### [⬇ Download the latest version](https://github.com/mugetsu-aqw/mugetsu/releases/latest)
 
-Unzip, run `Mugetsu.exe`, log in. Nothing to install.
+Unzip, run `Mugetsu.exe`, log in. Nothing to install. (Linux: extract the `-linux` archive and run `Mugetsu`.)
 
 ## Contact
 
@@ -44,7 +44,8 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit
+- Windows 10 or 11, 64-bit, or 64-bit Linux from about 2022 on (Ubuntu 22.04, Debian 12, Fedora 36,
+  SteamOS 3 or newer; Linux uses Vulkan or OpenGL, details in the README inside the Linux download)
 - A graphics card with **Vulkan** (NVIDIA GTX 600 / AMD Radeon HD 7000 / Intel 6th-gen Core or newer).
   On Intel and Qualcomm (Snapdragon) graphics, Mugetsu uses DirectX 12 (their Vulkan drivers crash
   or show a black window on several chips); since 1.1 it runs about as well as Vulkan. Without Vulkan,
@@ -57,7 +58,7 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 
 ## How to use
 
-1. Download the zip from **[Releases](https://github.com/mugetsu-aqw/mugetsu/releases/latest)** and unzip it anywhere.
+1. Download the `-windows.zip` from **[Releases](https://github.com/mugetsu-aqw/mugetsu/releases/latest)** and unzip it anywhere.
 2. Run `Mugetsu.exe`. The first time, Windows may say *"Windows protected your PC"* because the program
    isn't signed by a known publisher: click **More info → Run anyway**.
 3. Log in as usual.
@@ -82,8 +83,8 @@ graphics running slowly on Medium or High, it shows this tip once; it never chan
 - **Open source.** All of Mugetsu's code is public in the [`source`](source) folder (GPL-3.0), and from version
   1.3.1 on, every release is built from it by GitHub Actions: each build's page shows its log and the SHA-256 of
   the zip it made.
-- **VirusTotal (version 1.5.0):** [zip 0/66](https://www.virustotal.com/gui/file/06778fe14a10ee68ef213c4894ac6fff346d910a7b594f971b4db6477b7773d3) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/d833145410a8b4b1ff5a716661da627b61b2a21c3955fa7e77c9740f0382810b)
-- **SHA-256** of each release zip is listed on its release page, so you can check your download.
+- **VirusTotal (version 1.5.1):** [zip 0/67](https://www.virustotal.com/gui/file/e293fb9ed090985df7ba184b88ce57bbc965995ce65bd536d0b799f576cb8242) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/f8407e7d6924a7426e9d6385f82051c4f37b755a60443e40b60647fa3ea8cdfe) · [Linux archive 0/62](https://www.virustotal.com/gui/file/8788c329b413f59a3544a49a3df2b85e1fd1cc669577741a3602989e97e4f454)
+- **SHA-256** of each release file is listed on its release page, so you can check your download.
 
 ## FAQ
 
