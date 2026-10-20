@@ -27,7 +27,7 @@ You need [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`), Java 17 
 compiles its Flash classes with it) and git. Then, in this folder:
 
 ```
-powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build-window.ps1
 ```
 
 The result is `build\out\Mugetsu.exe`. `-NoPgo` builds without the speed profile. A build takes
@@ -44,7 +44,7 @@ the development files of a few system libraries (on Debian or Ubuntu:
 Then, in this folder:
 
 ```
-./build.sh
+./build-linux.sh
 ```
 
 The result is `build/out/Mugetsu`. `--no-pgo` builds without the speed profile.
@@ -61,8 +61,7 @@ Java 17 or newer and git. Then, in this folder:
 The result is `build/out/Mugetsu.app` (and a release zip next to it). `--universal` builds one
 app for Apple silicon and Intel; it needs both Rust targets (`rustup target add
 aarch64-apple-darwin x86_64-apple-darwin`). The build uses no speed profile by default: the
-one in `pgo/` was recorded on Windows. `--pgo FILE` uses a profile recorded on your Mac
-(`.profdata`, or a zip holding one).
+one in `pgo/` was recorded on Windows. `--no-pgo` builds without the speed profile.
 
 The macOS build uses Ruffle's macOS features (`fontconfig-dlopen`, so fontconfig is loaded
 from the system at runtime and no Homebrew libraries are needed) and draws with Metal. The
