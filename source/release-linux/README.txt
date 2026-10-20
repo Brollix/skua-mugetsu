@@ -33,7 +33,7 @@ Requirements
   - RAM: 8 GB minimum, 16 GB recommended.
   - A CPU with AVX2: Intel Core 4th generation ("Haswell", 2013) or newer, AMD Ryzen or
     newer.
-  - The usual desktop libraries (ALSA or PipeWire/PulseAudio sound, fontconfig, FreeType,
+  - The usual desktop libraries (ALSA or PipeWire/PulseAudio sound, fontconfig, zlib,
     OpenSSL 3, libudev); desktop systems have them already.
 
 How to use

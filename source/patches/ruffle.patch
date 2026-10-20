@@ -12160,6 +12160,22 @@ index a45404172..a7d1275d7 100644
 +        graphics_menu::sync_checks(hwnd);
 +    }
 +}
+diff --git a/frontend-utils/Cargo.toml b/frontend-utils/Cargo.toml
+index 4c41c04bb..72101b699 100644
+--- a/frontend-utils/Cargo.toml
++++ b/frontend-utils/Cargo.toml
+@@ -54,7 +54,10 @@ cpal = { workspace = true, optional = true }
+ bytemuck = { workspace = true, optional = true }
+ 
+ [target.'cfg(target_os = "linux")'.dependencies]
+-freetype-rs = { version = "0.38.0", optional = true }
++# AQW build: FreeType built in, so Mugetsu doesn't need the system's (freetype-sys 0.23 wants
++# FreeType 2.13; Ubuntu 22.04, which the Linux release is built on to run on 2022 systems,
++# has 2.12).
++freetype-rs = { version = "0.38.0", optional = true, features = ["bundled"] }
+ 
+ [dev-dependencies]
+ tempfile = { workspace = true }
 diff --git a/render/Cargo.toml b/render/Cargo.toml
 index 188549aee..69589f8cf 100644
 --- a/render/Cargo.toml
