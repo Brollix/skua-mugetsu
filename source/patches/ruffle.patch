@@ -8611,7 +8611,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index a3410740e..060637dfd 100644
+index a3410740e..c4f151173 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
 @@ -15,7 +15,7 @@ use ruffle_core::swf::HeaderExt;
@@ -9128,7 +9128,7 @@ index a3410740e..060637dfd 100644
                  if let Some(mut player) = self.player.get() {
                      player.set_mouse_in_stage(false);
                  }
-@@ -267,6 +687,54 @@ impl MainWindow {
+@@ -267,6 +687,56 @@ impl MainWindow {
          }
      }
  
@@ -9169,7 +9169,9 @@ index a3410740e..060637dfd 100644
 +            Setting::Graphics(choice) => {
 +                #[cfg(windows)]
 +                crate::windows::choose_graphics(self.gui.window(), choice);
-+                #[cfg(not(windows))]
++                #[cfg(target_os = "linux")]
++                crate::linux::choose_graphics(self.gui.window(), choice);
++                #[cfg(not(any(windows, target_os = "linux")))]
 +                let _ = choice;
 +            }
 +            Setting::ShowFps(on) => {
@@ -9183,7 +9185,7 @@ index a3410740e..060637dfd 100644
      fn on_metadata(&mut self, swf_header: HeaderExt) {
          let height_offset = if self.gui.window().fullscreen().is_some() || self.no_gui {
              0.0
-@@ -389,21 +857,171 @@ impl MainWindow {
+@@ -389,21 +859,171 @@ impl MainWindow {
          // We should look at changing our tick to happen somewhere else if we see any behavioural problems.
          if matches!(self.loaded, LoadingState::Loaded) {
              let new_time = Instant::now();
@@ -9356,7 +9358,7 @@ index a3410740e..060637dfd 100644
              self.gui.window().request_redraw();
          }
      }
-@@ -429,6 +1047,9 @@ macro_rules! enter_runtime {
+@@ -429,6 +1049,9 @@ macro_rules! enter_runtime {
  impl App {
      pub fn new(preferences: GlobalPreferences) -> Result<(Self, EventLoop<RuffleEvent>), Error> {
          let event_loop = EventLoop::with_user_event().build()?;
@@ -9366,7 +9368,7 @@ index a3410740e..060637dfd 100644
  
          let mut font_database = fontdb::Database::default();
          font_database.load_system_fonts();
-@@ -461,9 +1082,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -461,9 +1084,10 @@ impl ApplicationHandler<RuffleEvent> for App {
  
          if cause == StartCause::Init {
              let movie_url = self.preferences.cli.movie_url.clone();
@@ -9379,7 +9381,7 @@ index a3410740e..060637dfd 100644
  
              let no_gui = self.preferences.cli.no_gui;
              let min_window_size = if no_gui {
-@@ -479,7 +1101,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -479,7 +1103,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
              let mut window_attributes = WindowAttributes::default()
                  .with_visible(false)
@@ -9388,7 +9390,7 @@ index a3410740e..060637dfd 100644
                  .with_window_icon(Some(icon))
                  .with_min_inner_size(min_window_size);
  
-@@ -560,10 +1182,26 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -560,10 +1184,26 @@ impl ApplicationHandler<RuffleEvent> for App {
                  minimized: false,
                  occluded: false,
                  mouse_pos: PhysicalPosition::new(0.0, 0.0),
@@ -9415,7 +9417,7 @@ index a3410740e..060637dfd 100644
              });
          }
      }
-@@ -586,6 +1224,10 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -586,6 +1226,10 @@ impl ApplicationHandler<RuffleEvent> for App {
                  }
              }
  
@@ -9426,7 +9428,7 @@ index a3410740e..060637dfd 100644
              (Some(main_window), RuffleEvent::BrowseAndOpen(options, open_type)) => {
                  let event_loop = main_window.event_loop_proxy.clone();
                  let picker = main_window.gui.file_picker();
-@@ -619,7 +1261,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -619,7 +1263,7 @@ impl ApplicationHandler<RuffleEvent> for App {
              }
  
              (Some(main_window), RuffleEvent::CloseFile) => {
@@ -9435,7 +9437,7 @@ index a3410740e..060637dfd 100644
                  main_window.gui.close_movie(&mut main_window.player);
              }
  
-@@ -702,18 +1344,28 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -702,18 +1346,28 @@ impl ApplicationHandler<RuffleEvent> for App {
              // only place where we're setting control flow, and events cancel wait.
              // Note: the control flow might be set to `ControlFlow::WaitUntil` with a
              // timestamp in the past! Take that into consideration when changing this code.
@@ -9466,7 +9468,7 @@ index a3410740e..060637dfd 100644
  
          // Manually stop the tokio runtime: this makes sure that any pending Player-bound futures
          // are properly cancelled and put back on the winit event loop before it closes, preventing
-@@ -721,6 +1373,7 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -721,6 +1375,7 @@ impl ApplicationHandler<RuffleEvent> for App {
          if let Some(runtime) = self.runtime.take() {
              runtime.shutdown_timeout(std::time::Duration::from_secs(1));
          }
@@ -9474,7 +9476,7 @@ index a3410740e..060637dfd 100644
      }
  }
  
-@@ -729,3 +1382,17 @@ enum LoadingState {
+@@ -729,3 +1384,17 @@ enum LoadingState {
      WaitingForResize,
      Loaded,
  }
@@ -9676,9 +9678,15 @@ index 9e739a209..13be623d4 100644
      OpenDialog(DialogDescriptor),
  
 diff --git a/desktop/src/gui.rs b/desktop/src/gui.rs
-index df77233da..914846bca 100644
+index df77233da..1ad4d8138 100644
 --- a/desktop/src/gui.rs
 +++ b/desktop/src/gui.rs
+@@ -1,4 +1,4 @@
+-mod context_menu;
++pub(crate) mod context_menu;
+ mod controller;
+ pub mod dialogs;
+ mod locale;
 @@ -142,10 +142,11 @@ impl RuffleGui {
      pub fn show_context_menu(
          &mut self,
@@ -9694,7 +9702,7 @@ index df77233da..914846bca 100644
      }
  
 diff --git a/desktop/src/gui/context_menu.rs b/desktop/src/gui/context_menu.rs
-index 851e57101..69b8f17e2 100644
+index 851e57101..89c2c59e0 100644
 --- a/desktop/src/gui/context_menu.rs
 +++ b/desktop/src/gui/context_menu.rs
 @@ -1,7 +1,9 @@
@@ -9742,7 +9750,7 @@ index 851e57101..69b8f17e2 100644
          let mut item_clicked = false;
          self.position = self.position.or(egui_ctx.pointer_latest_pos());
  
-@@ -92,6 +104,312 @@ impl ContextMenu {
+@@ -92,6 +104,317 @@ impl ContextMenu {
  
          !should_close
      }
@@ -9849,17 +9857,22 @@ index 851e57101..69b8f17e2 100644
 +                        if settings.graphics_choice {
 +                            ui.add_space(4.0 * z);
 +                            row_title(ui, z, "Graphics API", "Changing it restarts Mugetsu");
-+                            let current = match settings.graphics {
-+                                None => 0,
-+                                Some(Graphics::Vulkan) => 1,
-+                                Some(Graphics::Dx12) => 2,
-+                            };
-+                            if let Some(choice) =
-+                                segmented(ui, z, "graphics", &["Auto", "Vulkan", "DirectX 12"], current)
-+                            {
-+                                let graphics = [None, Some(Graphics::Vulkan), Some(Graphics::Dx12)]
-+                                    [choice];
-+                                send(RuffleEvent::MugetsuSetting(Setting::Graphics(graphics)));
++                            #[cfg(target_os = "linux")]
++                            let (options, values): (&[&str], &[Option<Graphics>]) = (
++                                &["Auto", "Vulkan", "OpenGL"],
++                                &[None, Some(Graphics::Vulkan), Some(Graphics::Gl)],
++                            );
++                            #[cfg(not(target_os = "linux"))]
++                            let (options, values): (&[&str], &[Option<Graphics>]) = (
++                                &["Auto", "Vulkan", "DirectX 12"],
++                                &[None, Some(Graphics::Vulkan), Some(Graphics::Dx12)],
++                            );
++                            let current = values
++                                .iter()
++                                .position(|&g| g == settings.graphics)
++                                .unwrap_or(0);
++                            if let Some(choice) = segmented(ui, z, "graphics", options, current) {
++                                send(RuffleEvent::MugetsuSetting(Setting::Graphics(values[choice])));
 +                                item_clicked = true;
 +                            }
 +                        }
@@ -9897,23 +9910,23 @@ index 851e57101..69b8f17e2 100644
 +
 +// --- Mugetsu's panel -------------------------------------------------------------------------
 +
-+const WIDTH: f32 = 268.0;
-+const PANEL: Color32 = Color32::from_rgba_premultiplied(17, 19, 26, 242);
-+const EDGE: Color32 = Color32::from_rgba_premultiplied(58, 62, 78, 255);
-+const ROW_HOVER: Color32 = Color32::from_rgba_premultiplied(40, 44, 58, 255);
-+const TRACK: Color32 = Color32::from_rgba_premultiplied(48, 52, 66, 255);
-+const ACCENT: Color32 = Color32::from_rgb(124, 108, 240);
-+const TEXT: Color32 = Color32::from_rgb(232, 234, 242);
-+const MUTED: Color32 = Color32::from_rgb(140, 146, 166);
++pub(crate) const WIDTH: f32 = 268.0;
++pub(crate) const PANEL: Color32 = Color32::from_rgba_premultiplied(17, 19, 26, 242);
++pub(crate) const EDGE: Color32 = Color32::from_rgba_premultiplied(58, 62, 78, 255);
++pub(crate) const ROW_HOVER: Color32 = Color32::from_rgba_premultiplied(40, 44, 58, 255);
++pub(crate) const TRACK: Color32 = Color32::from_rgba_premultiplied(48, 52, 66, 255);
++pub(crate) const ACCENT: Color32 = Color32::from_rgb(124, 108, 240);
++pub(crate) const TEXT: Color32 = Color32::from_rgb(232, 234, 242);
++pub(crate) const MUTED: Color32 = Color32::from_rgb(140, 146, 166);
 +
-+fn panel_style(style: &mut Style) {
++pub(crate) fn panel_style(style: &mut Style) {
 +    style.visuals.override_text_color = Some(TEXT);
 +    style.spacing.button_padding = vec2(0.0, 0.0);
 +    style.interaction.selectable_labels = false;
 +}
 +
 +/// A small gray heading above a group, with a line after it.
-+fn section(ui: &mut Ui, z: f32, title: &str) {
++pub(crate) fn section(ui: &mut Ui, z: f32, title: &str) {
 +    ui.add_space(8.0 * z);
 +    let (rect, _) = ui.allocate_exact_size(vec2(WIDTH * z, 16.0 * z), Sense::hover());
 +    let text = ui.painter().text(
@@ -9932,7 +9945,7 @@ index 851e57101..69b8f17e2 100644
 +}
 +
 +/// A setting's name and hint (for a control below them).
-+fn row_title(ui: &mut Ui, z: f32, title: &str, hint: &str) {
++pub(crate) fn row_title(ui: &mut Ui, z: f32, title: &str, hint: &str) {
 +    let (rect, _) = ui.allocate_exact_size(vec2(WIDTH * z, 36.0 * z), Sense::hover());
 +    paint_title(ui, z, rect, title, hint);
 +}
@@ -9956,7 +9969,7 @@ index 851e57101..69b8f17e2 100644
 +}
 +
 +/// A row with a title, a hint and an on/off switch; returns whether it was clicked.
-+fn toggle_row(ui: &mut Ui, z: f32, title: &str, hint: &str, on: bool) -> bool {
++pub(crate) fn toggle_row(ui: &mut Ui, z: f32, title: &str, hint: &str, on: bool) -> bool {
 +    let (rect, response) = ui.allocate_exact_size(vec2(WIDTH * z, 40.0 * z), Sense::click());
 +    if response.hovered() {
 +        ui.painter().rect_filled(rect, CornerRadius::same((8.0 * z) as u8), ROW_HOVER);
@@ -9981,7 +9994,7 @@ index 851e57101..69b8f17e2 100644
 +}
 +
 +/// Pill-shaped choices side by side; returns the one clicked, if it isn't `selected`.
-+fn segmented(ui: &mut Ui, z: f32, id: &str, options: &[&str], selected: usize) -> Option<usize> {
++pub(crate) fn segmented(ui: &mut Ui, z: f32, id: &str, options: &[&str], selected: usize) -> Option<usize> {
 +    let (rect, _) = ui.allocate_exact_size(vec2(WIDTH * z, 30.0 * z), Sense::hover());
 +    let rect = rect.shrink2(vec2(6.0 * z, 2.0 * z));
 +    ui.painter().rect_filled(rect, CornerRadius::same((13.0 * z) as u8), TRACK);
@@ -10019,7 +10032,7 @@ index 851e57101..69b8f17e2 100644
 +}
 +
 +/// A clickable row with a title (and something on the right, like an arrow).
-+fn action_row(ui: &mut Ui, z: f32, title: &str, right: Option<&str>) -> Response {
++pub(crate) fn action_row(ui: &mut Ui, z: f32, title: &str, right: Option<&str>) -> Response {
 +    let (rect, response) = ui.allocate_exact_size(vec2(WIDTH * z, 30.0 * z), Sense::click());
 +    if response.hovered() {
 +        ui.painter().rect_filled(rect, CornerRadius::same((8.0 * z) as u8), ROW_HOVER);
@@ -10299,11 +10312,162 @@ index 2383b2dde..e79d1f30f 100644
 +    painter.galley(badge.left_top() + vec2(16.0, 4.0), galley, Color32::from_rgb(232, 234, 242));
 +    3
 +}
+diff --git a/desktop/src/gui/menu_bar.rs b/desktop/src/gui/menu_bar.rs
+index 6a535bae0..1aa1f3354 100644
+--- a/desktop/src/gui/menu_bar.rs
++++ b/desktop/src/gui/menu_bar.rs
+@@ -196,6 +196,8 @@ impl MenuBar {
+                         ui.close();
+                     }
+                 });
++                #[cfg(target_os = "linux")]
++                crate::linux::graphics_menu::menu_button(ui);
+             });
+         });
+     }
+diff --git a/desktop/src/linux.rs b/desktop/src/linux.rs
+new file mode 100644
+index 000000000..38c5b1933
+--- /dev/null
++++ b/desktop/src/linux.rs
+@@ -0,0 +1,132 @@
++//! AQW build (Mugetsu): Linux process restart and graphics selection.
++
++use crate::mugetsu::{self, Graphics};
++
++/// Starts Mugetsu again with the same command line.
++pub fn start_again() {
++    let Ok(exe) = std::env::current_exe() else {
++        return;
++    };
++    let _ = std::process::Command::new(exe)
++        .args(std::env::args_os().skip(1))
++        .spawn();
++}
++
++pub fn choose_graphics(_window: &winit::window::Window, choice: Option<Graphics>) {
++    if choice == mugetsu::saved_graphics() {
++        return;
++    }
++    let name = choice.map_or("Automatic", Graphics::name);
++    let answer = rfd::MessageDialog::new()
++        .set_level(rfd::MessageLevel::Info)
++        .set_title("Mugetsu")
++        .set_description(format!(
++            "Mugetsu will restart to use {name} graphics.\n\n\
++             You can switch again any time: right-click the game."
++        ))
++        .set_buttons(rfd::MessageButtons::OkCancel)
++        .show();
++    if answer != rfd::MessageDialogResult::Ok {
++        return;
++    }
++    mugetsu::save_graphics(choice);
++    tracing::info!("Graphics changed to {name}; starting Mugetsu again");
++    start_again();
++    std::process::exit(0);
++}
++
++/// Mugetsu: "Graphics" choices and settings in the Linux menu bar (when --gui is used).
++pub mod graphics_menu {
++    use super::*;
++    use crate::gui::context_menu::*;
++    use egui::*;
++
++    fn choose(choice: Option<Graphics>) {
++        if choice == mugetsu::saved_graphics() {
++            return;
++        }
++        let name = choice.map_or("Automatic", Graphics::name);
++        mugetsu::save_graphics(choice);
++        tracing::info!("Graphics changed to {name}; starting Mugetsu again");
++        super::start_again();
++        std::process::exit(0);
++    }
++
++    pub fn contents(ui: &mut Ui) {
++        panel_style(ui.style_mut());
++        let z = 1.0;
++        ui.set_width(WIDTH * z);
++        ui.spacing_mut().item_spacing = vec2(0.0, 2.0 * z);
++
++        // Header.
++        let (rect, _) = ui.allocate_exact_size(vec2(WIDTH * z, 24.0 * z), Sense::hover());
++        ui.painter().text(
++            pos2(rect.left() + 4.0 * z, rect.center().y),
++            Align2::LEFT_CENTER,
++            "Mugetsu",
++            FontId::proportional(16.0 * z),
++            TEXT,
++        );
++        ui.painter().text(
++            pos2(rect.right() - 4.0 * z, rect.center().y),
++            Align2::RIGHT_CENTER,
++            format!("v{}", crate::mugetsu::VERSION),
++            FontId::proportional(12.0 * z),
++            MUTED,
++        );
++        ui.add_space(4.0 * z);
++
++        section(ui, z, "GRAPHICS");
++        row_title(ui, z, "Edge smoothing", "Flash-style is lighter on laptops");
++        let flash_edges = mugetsu::saved_flash_edges().unwrap_or(true);
++        if let Some(choice) = segmented(
++            ui,
++            z,
++            "edges_gui",
++            &["Flash-style", "MSAA"],
++            if flash_edges { 0 } else { 1 },
++        ) {
++            let on = choice == 0;
++            ruffle_render::tessellator::set_flash_aa(on);
++            mugetsu::save_flash_edges(on);
++        }
++        ui.add_space(6.0 * z);
++        let interpolation = ruffle_core::frame_interpolation::enabled();
++        if toggle_row(
++            ui,
++            z,
++            "Frame interpolation",
++            "Smoother motion, best on strong PCs",
++            interpolation,
++        ) {
++            let on = !interpolation;
++            ruffle_core::frame_interpolation::set_enabled(on);
++            mugetsu::save_interpolation(on);
++        }
++        ui.add_space(4.0 * z);
++        row_title(ui, z, "Graphics API", "Changing it restarts Mugetsu");
++        let current_graphics = mugetsu::saved_graphics();
++        let options = &["Auto", "Vulkan", "OpenGL"];
++        let values = &[None, Some(Graphics::Vulkan), Some(Graphics::Gl)];
++        let current_idx = values.iter().position(|&g| g == current_graphics).unwrap_or(0);
++        if let Some(choice) = segmented(ui, z, "graphics_gui", options, current_idx) {
++            choose(values[choice]);
++        }
++
++        section(ui, z, "DISPLAY");
++        let show_fps = mugetsu::show_fps();
++        if toggle_row(ui, z, "Show FPS", "A small counter in the corner", show_fps) {
++            mugetsu::set_show_fps(!show_fps);
++        }
++
++        section(ui, z, "HELP");
++        if action_row(ui, z, "Open log folder", Some("↗")).clicked() {
++            mugetsu::open_log_folder();
++            ui.close();
++        }
++    }
++
++    pub fn menu_button(ui: &mut Ui) {
++        ui.menu_button("Mugetsu", contents);
++    }
++}
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 2265dc24c..df4437236 100644
+index 2265dc24c..4e04692b5 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
-@@ -13,6 +13,7 @@ mod custom_event;
+@@ -13,11 +13,14 @@ mod custom_event;
  mod dbus;
  mod gui;
  mod log;
@@ -10311,7 +10475,14 @@ index 2265dc24c..df4437236 100644
  mod player;
  mod preferences;
  #[cfg(feature = "tracy")]
-@@ -28,18 +29,23 @@ use app::App;
+ mod tracy;
+ mod util;
++#[cfg(target_os = "linux")]
++mod linux;
+ #[cfg(windows)]
+ mod windows;
+ 
+@@ -28,18 +31,23 @@ use app::App;
  use clap::CommandFactory;
  use clap::Parser;
  use cli::Opt;
@@ -10337,7 +10508,7 @@ index 2265dc24c..df4437236 100644
      static CALLSTACK: RefCell<Option<StaticCallstack>> = RefCell::default();
      static RENDER_INFO: RefCell<Option<String>> = RefCell::default();
      static SWF_INFO: RefCell<Option<String>> = RefCell::default();
-@@ -50,6 +56,78 @@ thread_local! {
+@@ -50,6 +58,78 @@ thread_local! {
  static GLOBAL: tracing_tracy::client::ProfiledAllocator<std::alloc::System> =
      tracing_tracy::client::ProfiledAllocator::new(std::alloc::System, 0);
  
@@ -10416,7 +10587,7 @@ index 2265dc24c..df4437236 100644
  static RUFFLE_VERSION: &str = concat!(
      env!("CARGO_PKG_VERSION"),
      "-",
-@@ -61,21 +139,6 @@ static RUFFLE_VERSION: &str = concat!(
+@@ -61,21 +141,6 @@ static RUFFLE_VERSION: &str = concat!(
      ")"
  );
  
@@ -10438,7 +10609,7 @@ index 2265dc24c..df4437236 100644
  fn panic_hook(info: &PanicHookInfo) {
      CALLSTACK.with(|callstack| {
          if let Some(callstack) = &*callstack.borrow() {
-@@ -85,60 +148,120 @@ fn panic_hook(info: &PanicHookInfo) {
+@@ -85,60 +150,125 @@ fn panic_hook(info: &PanicHookInfo) {
  
      let message = info.payload_as_str().unwrap_or("panic occurred");
  
@@ -10539,6 +10710,8 @@ index 2265dc24c..df4437236 100644
 +        // SAFETY: this runs first thing in `main`, before any other thread exists.
 +        unsafe { env::set_var("DISABLE_VULKAN_OBS_CAPTURE", "1") };
 +    }
++    let gui = args.iter().any(|a| is(a, "--gui"));
++    args.retain(|a| !is(a, "--gui"));
 +    let has_movie = Opt::try_parse_from(&args).map_or(true, |opt| opt.movie_url.is_some());
 +    if has_movie {
 +        // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
@@ -10565,6 +10738,9 @@ index 2265dc24c..df4437236 100644
 +    let graphics = if given("--graphics") || given("-g") {
 +        "vulkan" // unused: the given option wins
 +    } else if let Some(chosen) = mugetsu::saved_graphics() {
++        #[cfg(target_os = "linux")]
++        mugetsu::add_title_note(chosen.name());
++        #[cfg(not(target_os = "linux"))]
 +        mugetsu::add_title_note(format!("{} · right-click here to change", chosen.name()));
 +        chosen.arg()
 +    } else if let Some(name) = mugetsu::intel_graphics(low_power) {
@@ -10591,7 +10767,7 @@ index 2265dc24c..df4437236 100644
 +    ];
 +    let mut full = vec![args[0].clone(), AQW_LOADER_URL.into()];
 +    for (flag, short, value) in defaults {
-+        if given(flag) || short.is_some_and(given) {
++        if (*flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
 +            continue;
          }
 -        if let Ok(url) = Url::parse_with_params(
@@ -10609,7 +10785,7 @@ index 2265dc24c..df4437236 100644
  }
  
  fn main() -> Result<(), Error> {
-@@ -147,11 +270,19 @@ fn main() -> Result<(), Error> {
+@@ -147,11 +277,19 @@ fn main() -> Result<(), Error> {
          prev_hook(info);
          panic_hook(info);
      }));
@@ -10630,7 +10806,7 @@ index 2265dc24c..df4437236 100644
  
      #[cfg(feature = "shell-completions")]
      if let Some(shell) = opt.completions {
-@@ -163,6 +294,7 @@ fn main() -> Result<(), Error> {
+@@ -163,6 +301,7 @@ fn main() -> Result<(), Error> {
      let preferences = GlobalPreferences::load(opt)?;
  
      let logs_path = &preferences.cli.cache_directory.join("log");
@@ -10638,7 +10814,7 @@ index 2265dc24c..df4437236 100644
      let log_path = preferences.log_filename_pattern().create_path(logs_path);
      if let Some(parent) = log_path.parent() {
          std::fs::create_dir_all(parent)?;
-@@ -176,11 +308,19 @@ fn main() -> Result<(), Error> {
+@@ -176,11 +315,19 @@ fn main() -> Result<(), Error> {
      let (non_blocking_file, _file_guard) = tracing_appender::non_blocking(File::create(log_path)?);
      let (non_blocking_stdout, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
  
@@ -10663,7 +10839,7 @@ index 2265dc24c..df4437236 100644
  
      let subscriber = tracing_subscriber::registry()
          .with(env_filter)
-@@ -195,6 +335,23 @@ fn main() -> Result<(), Error> {
+@@ -195,6 +342,23 @@ fn main() -> Result<(), Error> {
  
      subscriber.init();
  
@@ -10689,10 +10865,10 @@ index 2265dc24c..df4437236 100644
      });
 diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
 new file mode 100644
-index 000000000..ae5c2c0c0
+index 000000000..4ba1ff8f3
 --- /dev/null
 +++ b/desktop/src/mugetsu.rs
-@@ -0,0 +1,762 @@
+@@ -0,0 +1,770 @@
 +//! AQW build (Mugetsu): things the release player does on its own, without a launcher:
 +//! the window title, remembering that the Vulkan driver crashed on this PC (so the next start
 +//! uses DirectX 12), the "running on the built-in graphics" tip and the new-version notice.
@@ -10818,6 +10994,8 @@ index 000000000..ae5c2c0c0
 +pub enum Graphics {
 +    Vulkan,
 +    Dx12,
++    #[cfg(target_os = "linux")]
++    Gl,
 +}
 +
 +impl Graphics {
@@ -10825,6 +11003,8 @@ index 000000000..ae5c2c0c0
 +        match self {
 +            Graphics::Vulkan => "vulkan",
 +            Graphics::Dx12 => "dx12",
++            #[cfg(target_os = "linux")]
++            Graphics::Gl => "gl",
 +        }
 +    }
 +
@@ -10832,6 +11012,8 @@ index 000000000..ae5c2c0c0
 +        match self {
 +            Graphics::Vulkan => "Vulkan",
 +            Graphics::Dx12 => "DirectX 12",
++            #[cfg(target_os = "linux")]
++            Graphics::Gl => "OpenGL",
 +        }
 +    }
 +}
@@ -10853,6 +11035,8 @@ index 000000000..ae5c2c0c0
 +    match text.trim() {
 +        "vulkan" => Some(Graphics::Vulkan),
 +        "dx12" => Some(Graphics::Dx12),
++        #[cfg(target_os = "linux")]
++        "gl" => Some(Graphics::Gl),
 +        _ => None,
 +    }
 +}
@@ -10942,7 +11126,7 @@ index 000000000..ae5c2c0c0
 +            interpolation: ruffle_core::frame_interpolation::enabled(),
 +            flash_edges: ruffle_render::tessellator::flash_aa_switch(),
 +            graphics: saved_graphics(),
-+            graphics_choice: cfg!(windows) && plays_aqw(),
++            graphics_choice: (cfg!(windows) || cfg!(target_os = "linux")) && plays_aqw(),
 +            show_fps: show_fps(),
 +        }
 +    }
