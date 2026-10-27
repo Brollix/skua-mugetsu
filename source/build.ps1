@@ -37,6 +37,8 @@ Run git @('-C', $ruffle, '-c', 'advice.detachedHead=false', 'checkout', '-q', 'F
 
 # 2. Mugetsu's changes to Ruffle.
 Run git @('-C', $ruffle, 'apply', '--whitespace=nowarn', (Join-Path $root 'patches\ruffle.patch'))
+# Skua build: the bridge to VibeSkua and drawing inside its window (desktop\src\skua.rs).
+Run git @('-C', $ruffle, 'apply', '--whitespace=nowarn', (Join-Path $root 'patches\skua.patch'))
 
 # 3. The libraries Mugetsu changes, from crates.io, patched into ruffle\patches\.
 $crates = @(
