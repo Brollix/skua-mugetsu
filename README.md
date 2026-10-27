@@ -1,10 +1,10 @@
 # Mugetsu (Skua build)
 
-> **This is the Skua build of Mugetsu**, the game player bundled with [VibeSkua](https://github.com/retr0gr4d3/VibeSkua).
+> **This is the Skua build of Mugetsu**, the game player bundled with [Bonxie](https://github.com/retr0gr4d3/Bonxie).
 > It is Mugetsu plus one patch, [`source/patches/skua.patch`](source/patches/skua.patch) (see
-> `desktop/src/skua.rs` in it): with `--skua-bridge host:port` the player connects to VibeSkua so VibeSkua can call
+> `desktop/src/skua.rs` in it): with `--skua-bridge host:port` the player connects to Bonxie so Bonxie can call
 > skua.swf's ExternalInterface callbacks and receive its events, and with `--skua-parent <window handle>` it draws
-> inside VibeSkua's window. Without those options it behaves like Mugetsu. The original project is
+> inside Bonxie's window. Without those options it behaves like Mugetsu. The original project is
 > [mugetsu-aqw/mugetsu](https://github.com/mugetsu-aqw/mugetsu); the rest of this README is theirs.
 
 **A faster way to play AdventureQuest Worlds on Windows and Linux.**
