@@ -268,12 +268,25 @@ index b37bdd8a..681f2650 100644
              builder = builder.with_external_interface(Box::new(DesktopExternalInterfaceProvider {
                  spoof_url: opt.player.spoof_url.clone(),
              }));
+diff --git a/desktop/src/gui/controller.rs b/desktop/src/gui/controller.rs
+--- a/desktop/src/gui/controller.rs
++++ b/desktop/src/gui/controller.rs
+@@ -359,6 +359,10 @@ impl GuiController {
+                 surface_texture
+             }
+             state @ (wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
++                if crate::skua::active() && matches!(state, wgpu::CurrentSurfaceTexture::Lost) {
++                    tracing::info!("Skua surface lost (host window closed), exiting");
++                    std::process::exit(0);
++                }
+                 // Reconfigure the surface if lost or outdated.
+                 // Some sources suggest ignoring `Outdated` and waiting for the next frame,
+                 // but I suspect this advice is related explicitly to resizing,
 diff --git a/desktop/src/skua.rs b/desktop/src/skua.rs
 new file mode 100644
-index 00000000..5d46deab
 --- /dev/null
 +++ b/desktop/src/skua.rs
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,286 @@
 +//! Skua build: lets Bonxie drive the game and show it inside its own window.
 +//!
 +//! With `--skua-bridge host:port` the player connects to Bonxie over TCP and both sides send one
@@ -331,6 +344,22 @@ index 00000000..5d46deab
 +    if WRITER.get().is_some() {
 +        return Ok(());
 +    }
++
++    #[cfg(target_os = "linux")]
++    {
++        unsafe extern "C" {
++            fn prctl(
++                option: std::os::raw::c_int,
++                arg2: std::os::raw::c_ulong,
++                arg3: std::os::raw::c_ulong,
++                arg4: std::os::raw::c_ulong,
++                arg5: std::os::raw::c_ulong,
++            ) -> std::os::raw::c_int;
++        }
++        unsafe {
++            prctl(1, 9, 0, 0, 0); // PR_SET_PDEATHSIG, SIGKILL
++        }
++    }
 +    let stream = TcpStream::connect(addr)?;
 +    stream.set_nodelay(true)?;
 +    let reader = BufReader::new(stream.try_clone()?);
@@ -354,7 +383,7 @@ index 00000000..5d46deab
 +                }
 +            }
 +            tracing::info!("Skua bridge closed, exiting");
-+            let _ = event_loop.send_event(RuffleEvent::ExitRequested);
++            std::process::exit(0);
 +        })?;
 +    Ok(())
 +}
