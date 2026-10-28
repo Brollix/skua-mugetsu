@@ -10979,7 +10979,7 @@ new file mode 100644
 index 000000000..ee37bb25b
 --- /dev/null
 +++ b/desktop/src/mugetsu.rs
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,822 @@
 +//! AQW build (Mugetsu): things the release player does on its own, without a launcher:
 +//! the window title, remembering that the Vulkan driver crashed on this PC (so the next start
 +//! uses DirectX 12), the "running on the built-in graphics" tip and the new-version notice.
