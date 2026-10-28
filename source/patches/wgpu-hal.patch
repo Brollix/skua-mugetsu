@@ -1359,7 +1359,7 @@ index 0000000..68c2bdb
 +    }
 +}
 diff --git a/src/dx12/suballocation.rs b/src/dx12/suballocation.rs
-index 89c7dc4..2243fed 100644
+index 89c7dc4..052eeea 100644
 --- a/src/dx12/suballocation.rs
 +++ b/src/dx12/suballocation.rs
 @@ -22,6 +22,8 @@ enum AllocationInner {
@@ -1405,18 +1405,18 @@ index 89c7dc4..2243fed 100644
          let allocator = gpu_allocator::d3d12::Allocator::new(&allocator_desc).inspect_err(|e| {
              log::error!("Failed to create d3d12 allocator, error: {e}");
          })?;
-+        let kind_allocator = || {
++        let kind_allocator = |kind: u8| {
 +            gpu_allocator::d3d12::Allocator::new(&gpu_allocator::d3d12::AllocatorCreateDesc {
 +                device: gpu_allocator::d3d12::ID3D12DeviceVersion::Device(raw.clone()),
 +                debug_settings: Default::default(),
-+                allocation_sizes: crate::aqw_kind_sizes(allocation_sizes).into(),
++                allocation_sizes: crate::aqw_kind_sizes(allocation_sizes, kind).into(),
 +            })
 +            .inspect_err(|e| {
 +                log::error!("Failed to create d3d12 allocator, error: {e}");
 +            })
 +            .map(|allocator| Arc::new(Mutex::new(allocator)))
 +        };
-+        let kinds = [kind_allocator()?, kind_allocator()?];
++        let kinds = [kind_allocator(1)?, kind_allocator(2)?];
  
          Ok(Self {
              inner: Arc::new(Mutex::new(allocator)),
@@ -1541,10 +1541,10 @@ index aca5bbc..73e36db 100644
          let barriers = barriers.iter().map(|barrier| BufferBarrier {
              buffer: barrier.buffer.expect_downcast_ref(),
 diff --git a/src/lib.rs b/src/lib.rs
-index ca626f2..7d8798e 100644
+index ca626f2..4a356c8 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -247,6 +247,49 @@ extern crate wgpu_types as wgt;
+@@ -247,6 +247,73 @@ extern crate wgpu_types as wgt;
  #[macro_use]
  extern crate std;
  
@@ -1583,18 +1583,42 @@ index ca626f2..7d8798e 100644
 +    }
 +}
 +
-+/// Block sizes for kinds 1 and 2: the same as for everything else. (Fixed 16 MB blocks were
-+/// tried: textures over 16 MB, such as full-window layers, then each got a driver allocation of
-+/// their own, which made creating them about twice as slow in fights.)
++/// Block sizes for a texture kind. Kind 1 (pooled layers): the same as for everything else.
++/// (Fixed 16 MB blocks for all kinds were tried: textures over 16 MB, such as full-window
++/// layers, then each got a driver allocation of their own, which made creating them about
++/// twice as slow in fights.) Kind 2 (cacheAsBitmap pictures): fixed 32 MB blocks. Those
++/// pictures are remade at new sizes as avatars animate, and with the usual 64 MB blocks every
++/// block kept a few live pictures, so none was ever given back: 185-320 MB in use inside
++/// 570-820 MB reserved. Smaller blocks empty out and are released; a picture over 32 MB (a
++/// 2900x2900 layer) still gets a driver allocation of its own, which is rare.
++/// `RUFFLE_CACHED_BLOCK_MB` overrides the size (0 = the usual blocks), for A/B comparisons.
 +#[cfg(any(dx12, vulkan))]
-+pub(crate) fn aqw_kind_sizes(base: AllocationSizes) -> AllocationSizes {
-+    base
++pub(crate) fn aqw_kind_sizes(base: AllocationSizes, kind: u8) -> AllocationSizes {
++    const MB: u64 = 1024 * 1024;
++    const CACHED_BLOCK_MB: u64 = 32;
++    if kind != 2 {
++        return base;
++    }
++    let block_mb = std::env::var("RUFFLE_CACHED_BLOCK_MB")
++        .ok()
++        .and_then(|mb| mb.parse().ok())
++        .unwrap_or(CACHED_BLOCK_MB);
++    if block_mb == 0 {
++        return base;
++    }
++    let block = (block_mb * MB).clamp(4 * MB, 256 * MB);
++    log::info!("AQW build: cacheAsBitmap pictures use {} MB GPU memory blocks", block / MB);
++    AllocationSizes {
++        min_device_memblock_size: block,
++        max_device_memblock_size: block,
++        ..base
++    }
 +}
 +
  /// DirectX12 API internals.
  #[cfg(dx12)]
  pub mod dx12;
-@@ -427,6 +470,7 @@ impl From<gpu_allocator::AllocationError> for DeviceError {
+@@ -427,6 +494,7 @@ impl From<gpu_allocator::AllocationError> for DeviceError {
  // and remove this type.
  // https://github.com/Traverse-Research/gpu-allocator/issues/295
  #[cfg_attr(not(any(dx12, vulkan)), expect(dead_code))]
@@ -1602,7 +1626,7 @@ index ca626f2..7d8798e 100644
  pub(crate) struct AllocationSizes {
      pub(crate) min_device_memblock_size: u64,
      pub(crate) max_device_memblock_size: u64,
-@@ -1445,6 +1489,29 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
+@@ -1445,6 +1513,29 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
      where
          I: Iterator<Item = <Self::A as Api>::CommandBuffer>;
  
@@ -1632,11 +1656,63 @@ index ca626f2..7d8798e 100644
      unsafe fn transition_buffers<'a, T>(&mut self, barriers: T)
      where
          T: Iterator<Item = BufferBarrier<'a, <Self::A as Api>::Buffer>>;
+diff --git a/src/metal/adapter.rs b/src/metal/adapter.rs
+index c9c48c3..acfcf2a 100644
+--- a/src/metal/adapter.rs
++++ b/src/metal/adapter.rs
+@@ -60,6 +60,10 @@ impl super::Adapter {
+     pub fn raw_device(&self) -> &ProtocolObject<dyn MTLDevice> {
+         &self.shared.device
+     }
++    pub fn memory_budget(&self) -> Option<(u64, u64)> {
++        let budget = self.shared.device.recommendedMaxWorkingSetSize() as u64;
++        (budget != 0).then(|| (budget, self.shared.device.currentAllocatedSize() as u64))
++    }
+ }
+ 
+ impl crate::Adapter for super::Adapter {
 diff --git a/src/vulkan/adapter.rs b/src/vulkan/adapter.rs
-index 196daf4..65547f6 100644
+index 196daf4..86b4610 100644
 --- a/src/vulkan/adapter.rs
 +++ b/src/vulkan/adapter.rs
-@@ -2948,7 +2948,7 @@ impl super::Adapter {
+@@ -2501,6 +2501,36 @@ impl super::Adapter {
+         self.raw
+     }
+ 
++    pub fn memory_budget(&self) -> Option<(u64, u64)> {
++        if !self
++            .phd_capabilities
++            .supports_extension(ext::memory_budget::NAME)
++        {
++            return None;
++        }
++        let mut budget_props = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
++        let mut props = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget_props);
++        unsafe {
++            self.instance
++                .raw
++                .get_physical_device_memory_properties2(self.raw, &mut props);
++        }
++        let heaps = props.memory_properties.memory_heaps_as_slice();
++        let budget = heaps
++            .iter()
++            .enumerate()
++            .filter(|(_, heap)| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
++            .map(|(i, _)| budget_props.heap_budget[i])
++            .sum();
++        let usage = heaps
++            .iter()
++            .enumerate()
++            .filter(|(_, heap)| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
++            .map(|(i, _)| budget_props.heap_usage[i])
++            .sum();
++        (budget != 0).then_some((budget, usage))
++    }
++
+     pub fn get_physical_device_features(&self) -> &PhysicalDeviceFeatures {
+         &self.phd_features
+     }
+@@ -2948,7 +2978,7 @@ impl super::Adapter {
              wait_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Wait)),
          };
  
@@ -1645,29 +1721,29 @@ index 196daf4..65547f6 100644
  
          let buffer_device_address = enabled_extensions.contains(&khr::buffer_device_address::NAME);
  
-@@ -2959,8 +2959,20 @@ impl super::Adapter {
+@@ -2959,8 +2989,20 @@ impl super::Adapter {
                  physical_device: self.raw,
                  debug_settings: Default::default(),
                  buffer_device_address,
 -                allocation_sizes,
 +                allocation_sizes: allocation_sizes.into(),
              })?;
-+        let kind_allocator = || {
++        let kind_allocator = |kind: u8| {
 +            gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
 +                instance: self.instance.raw.clone(),
 +                device: shared.raw.clone(),
 +                physical_device: self.raw,
 +                debug_settings: Default::default(),
 +                buffer_device_address,
-+                allocation_sizes: crate::aqw_kind_sizes(allocation_sizes).into(),
++                allocation_sizes: crate::aqw_kind_sizes(allocation_sizes, kind).into(),
 +            })
 +            .map(Mutex::new)
 +        };
-+        let kind_allocators = [kind_allocator()?, kind_allocator()?];
++        let kind_allocators = [kind_allocator(1)?, kind_allocator(2)?];
  
          let desc_allocator = super::descriptor::DescriptorAllocator::new(
              if let Some(di) = self.phd_capabilities.descriptor_indexing {
-@@ -2973,6 +2985,7 @@ impl super::Adapter {
+@@ -2973,6 +3015,7 @@ impl super::Adapter {
          let device = super::Device {
              shared,
              mem_allocator: Mutex::new(mem_allocator),

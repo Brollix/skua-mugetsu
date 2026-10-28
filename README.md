@@ -7,17 +7,19 @@
 > inside Bonxie's window. Without those options it behaves like Mugetsu. The original project is
 > [mugetsu-aqw/mugetsu](https://github.com/mugetsu-aqw/mugetsu); the rest of this README is theirs.
 
-**A faster way to play AdventureQuest Worlds on Windows and Linux.**
+**A faster way to play AdventureQuest Worlds on Windows, Linux and macOS.**
 Crowded rooms, big fights and room changes stay at a smooth, steady frame rate.
 
 ### [⬇ Download the latest version](https://github.com/mugetsu-aqw/mugetsu/releases/latest)
 
-Unzip, run `Mugetsu.exe`, log in. Nothing to install. (Linux: extract the `-linux` archive and run `Mugetsu`.)
+Unzip, run `Mugetsu.exe`, log in. Nothing to install. (Linux: extract the `-linux` archive and run `Mugetsu`.
+macOS: unzip the `-macos-universal` zip and open `Mugetsu.app`.)
 
 ## Contact
 
-Questions, bug reports or feedback: Discord **silver09415**. When reporting a problem, include your log
-(`%LOCALAPPDATA%\ruffle\log\ruffle.log`, it has no account details).
+Questions, bug reports or feedback: Discord **silver09415**. For help with the Linux version: Discord
+**jonasalv0** first, or **silver09415**. When reporting a problem, include your log (`%LOCALAPPDATA%\ruffle\log\ruffle.log` on Windows,
+`~/.cache/ruffle/log` on Linux; it has no account details).
 
 ---
 
@@ -52,7 +54,9 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 ## Requirements
 
 - Windows 10 or 11, 64-bit, or 64-bit Linux from about 2022 on (Ubuntu 22.04, Debian 12, Fedora 36,
-  SteamOS 3 or newer; Linux uses Vulkan or OpenGL, details in the README inside the Linux download)
+  SteamOS 3 or newer; Linux uses Vulkan or OpenGL, details in the README inside the Linux download),
+  or macOS 11 (Big Sur) or newer on Apple silicon or Intel (uses Metal; details in the README inside
+  the macOS download)
 - A graphics card with **Vulkan** (NVIDIA GTX 600 / AMD Radeon HD 7000 / Intel 6th-gen Core or newer).
   On Intel and Qualcomm (Snapdragon) graphics, Mugetsu uses DirectX 12 (their Vulkan drivers crash
   or show a black window on several chips); since 1.1 it runs about as well as Vulkan. Without Vulkan,
@@ -61,7 +65,7 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
   or DirectX 12 (try DirectX 12 if the window stays black or stutters).
 - **Graphics memory:** 2 GB minimum (with AQW's Quality set to **Low**), 4 GB or more recommended
 - **RAM:** 8 GB minimum, 16 GB recommended
-- **CPU with AVX2:** Intel 4th-gen Core (2013) or newer, AMD Ryzen or newer
+- **CPU with AVX2** (Windows and Linux): Intel 4th-gen Core (2013) or newer, AMD Ryzen or newer
 
 ## How to use
 
@@ -69,6 +73,10 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 2. Run `Mugetsu.exe`. The first time, Windows may say *"Windows protected your PC"* because the program
    isn't signed by a known publisher: click **More info → Run anyway**.
 3. Log in as usual.
+
+**macOS:** unzip the `-macos-universal.zip` and open `Mugetsu.app`. The first time, macOS blocks it
+because it isn't notarized by Apple: open **System Settings → Privacy & Security**, click **Open Anyway**
+next to the message about Mugetsu, then confirm. The README inside the download has the steps for older macOS.
 
 **Settings:** right-click anywhere on the game for Mugetsu's menu: **Frame interpolation** (smoother motion on
 strong PCs, off by default), **Edge smoothing**, **Graphics**, **Show FPS**, **Full screen** and **Open log folder**.
@@ -90,7 +98,7 @@ graphics running slowly on Medium or High, it shows this tip once; it never chan
 - **Open source.** All of Mugetsu's code is public in the [`source`](source) folder (GPL-3.0), and from version
   1.3.1 on, every release is built from it by GitHub Actions: each build's page shows its log and the SHA-256 of
   the zip it made.
-- **VirusTotal (version 1.5.1):** [zip 0/67](https://www.virustotal.com/gui/file/e293fb9ed090985df7ba184b88ce57bbc965995ce65bd536d0b799f576cb8242) · [Mugetsu.exe 0/71](https://www.virustotal.com/gui/file/f8407e7d6924a7426e9d6385f82051c4f37b755a60443e40b60647fa3ea8cdfe) · [Linux archive 0/62](https://www.virustotal.com/gui/file/8788c329b413f59a3544a49a3df2b85e1fd1cc669577741a3602989e97e4f454)
+- **VirusTotal (version 1.6.0):** [zip 0/64](https://www.virustotal.com/gui/file/ecace89c54e2503f591b08c4343449b689dbf04b23445a4feb2e299e18ed54c7) · [Mugetsu.exe 0/70](https://www.virustotal.com/gui/file/3b2b64a35f58bca9812eda7f089b6d1f568bd0ed28cb3144463c42aa52c16245) · [Linux archive 0/61](https://www.virustotal.com/gui/file/f80748927534fcea6fe483fe455c8e05bb215eee11a445ecb5ac88456a995ef5)
 - **SHA-256** of each release file is listed on its release page, so you can check your download.
 
 ## FAQ

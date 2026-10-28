@@ -2,7 +2,7 @@
 
 Mugetsu is [Ruffle](https://github.com/ruffle-rs/ruffle) (the open-source Flash Player emulator)
 with changes for AdventureQuest Worlds. This folder holds those changes as patches on top of
-Ruffle, plus the scripts that build `Mugetsu.exe` (Windows) and `Mugetsu` (Linux) from them.
+Ruffle, plus the scripts that build `Mugetsu.exe` (Windows), `Mugetsu` (Linux) and `Mugetsu.app` from them.
 
 Every release is built from this folder by GitHub Actions (`.github/workflows/build.yml`); each
 run's page shows the build log and the SHA-256 of the files it made, which match the files on
@@ -18,8 +18,8 @@ the release page.
 | `patches/skua.patch` | The Skua build's changes, applied after `ruffle.patch`: the bridge to Bonxie and drawing inside its window (`desktop/src/skua.rs`) |
 | `patches/wgpu-core.patch`, `wgpu-hal.patch`, `gc-arena.patch`, `lyon_path.patch`, `lyon_algorithms.patch` | Changes to five libraries Ruffle uses (wgpu-core 30.0.1, wgpu-hal 30.0.1, gc-arena 0.7.0, lyon_path 1.0.7, lyon_algorithms 1.0.5 from crates.io) |
 | `pgo/aqw.profdata.zip` | The speed profile (PGO): counts of which code runs most while playing AQW, recorded with a measuring build. The compiler uses it to optimize for real play. It holds function names and counts only. |
-| `build.ps1`, `build.sh` | Download Ruffle at `RUFFLE_COMMIT` and the five libraries, apply the patches and build (Windows, Linux) |
-| `release/`, `release-linux/` | The other files in the Windows zip and the Linux archive (readme, license texts, notices) |
+| `build-windows.ps1`, `build-linux.sh`, `build-macos.sh` | Download Ruffle at `RUFFLE_COMMIT` and the five libraries, apply the patches and build (Windows, Linux, macOS) |
+| `release/`, `release-linux/`, `release-macos/` | The other files in the Windows zip, the Linux archive and the macOS zip (readme, license texts, notices) |
 | `notes/` | Release notes, used for the draft release |
 
 ## Building it yourself (Windows)
@@ -28,7 +28,7 @@ You need [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`), Java 17 
 compiles its Flash classes with it) and git. Then, in this folder:
 
 ```
-powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build-windows.ps1
 ```
 
 The result is `build\out\Mugetsu.exe`. `-NoPgo` builds without the speed profile. A build takes
@@ -45,10 +45,28 @@ the development files of a few system libraries (on Debian or Ubuntu:
 Then, in this folder:
 
 ```
-./build.sh
+./build-linux.sh
 ```
 
 The result is `build/out/Mugetsu`. `--no-pgo` builds without the speed profile.
+
+## Building it yourself (macOS)
+
+You need macOS 11 or newer, [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`),
+Java 17 or newer and git. Then, in this folder:
+
+```
+./build-macos.sh
+```
+
+The result is `build/out/Mugetsu.app` (and a release zip next to it). `--universal` builds one
+app for Apple silicon and Intel; it needs both Rust targets (`rustup target add
+aarch64-apple-darwin x86_64-apple-darwin`). `--no-pgo` builds without the speed profile.
+
+The macOS build uses Ruffle's macOS features (`fontconfig-dlopen`, so fontconfig is loaded
+from the system at runtime and no Homebrew libraries are needed) and draws with Metal. The
+app is ad-hoc signed, not notarized: macOS blocks the first start of an app downloaded from the
+internet until it's allowed in System Settings > Privacy & Security ("Open Anyway").
 
 ## What the changes do
 
