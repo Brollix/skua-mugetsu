@@ -11522,7 +11522,7 @@ index 000000000..ee37bb25b
 +pub fn video_memory() -> Option<(u64, u64)> {
 +    VIDEO_ADAPTER
 +        .get()
-+        .and_then(ruffle_render_wgpu::adapter_memory)
++        .and_then(ruffle_render_wgpu::backend::adapter_memory)
 +}
 +
 +/// A smaller graphics memory budget to test the memory watch with on a big card: a file
