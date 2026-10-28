@@ -6544,7 +6544,7 @@ diff --git a/core/src/tessellation_cache.rs b/core/src/tessellation_cache.rs
 index cacd85384..36fcffc50 100644
 --- a/core/src/tessellation_cache.rs
 +++ b/core/src/tessellation_cache.rs
-@@ -1,19 +1,184 @@
+@@ -1,19 +1,179 @@
 -use ruffle_render::backend::ShapeHandle;
 +use ruffle_render::backend::{NO_STRETCH, ShapeHandle, Stretch};
 +use ruffle_render::tessellator::{EdgeMode, edge_mode};
@@ -6712,12 +6712,7 @@ index cacd85384..36fcffc50 100644
 +/// drawn without their gear). Only used while the GPU's memory is nearly full. Returns how many
 +/// tessellations were freed.
 +pub fn evict_unused(unused_secs: u32) -> usize {
-+    let now = clock();
-+    let cutoff = if now <= unused_secs {
-+        now.saturating_sub(2).max(1)
-+    } else {
-+        now - unused_secs
-+    };
++    let cutoff = clock().saturating_sub(unused_secs);
 +    REGISTRY.with(|registry| {
 +        let mut registry = registry.borrow_mut();
 +        let mut freed = 0;
@@ -8716,7 +8711,7 @@ index a3410740e..ba7158bb9 100644
      min_window_size: LogicalSize<u32>,
      max_window_size: PhysicalSize<u32>,
      no_gui: bool,
-@@ -43,6 +51,352 @@ struct MainWindow {
+@@ -43,6 +51,350 @@ struct MainWindow {
      time: Instant,
      next_frame_time: Option<Instant>,
      event_loop_proxy: EventLoopProxy<RuffleEvent>,
@@ -8819,14 +8814,12 @@ index a3410740e..ba7158bb9 100644
 +        .unwrap_or_default();
 +        let (encoder_backlog, in_flight) = wgpu_core::aqw_stats();
 +        let mut commit = 0usize;
-+        let mut rss = 0usize;
-+        let mut zero = [0usize; 6];
++        let mut zero = [0usize; 7];
 +        // SAFETY: plain out-pointers.
 +        unsafe {
-+            let [a, b, c, e, f, g] = &mut zero;
-+            libmimalloc_sys::mi_process_info(a, b, c, &mut rss, e, &mut commit, f, g);
++            let [a, b, c, d, e, f, g] = &mut zero;
++            libmimalloc_sys::mi_process_info(a, b, c, d, e, &mut commit, f, g);
 +        }
-+        let commit = commit.max(rss);
 +        // AQW build: what Windows counts against the graphics chip's memory (see
 +        // `mugetsu::video_memory`).
 +        let video_memory = crate::mugetsu::video_memory()
@@ -10207,11 +10200,13 @@ index 2383b2dde..e79d1f30f 100644
          let surface = instance.create_surface(window.clone())?;
          let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
              backend,
-@@ -72,12 +80,35 @@ impl GuiController {
+@@ -72,12 +80,36 @@ impl GuiController {
          ))
          .map_err(|e| anyhow!(e.to_string()))?;
          let adapter_info = adapter.get_info();
 +        crate::mugetsu::set_adapter_ids(adapter_info.vendor, adapter_info.device);
++        #[cfg(not(windows))]
++        crate::mugetsu::set_video_memory_adapter(adapter.clone());
 +        // Which drawing speed-ups are switched off (for test logs).
 +        let off = crate::mugetsu::drawing_switches_off();
 +        if !off.is_empty() {
@@ -11467,8 +11462,16 @@ index 000000000..ee37bb25b
 +/// DXGI for `video_memory`.
 +static ADAPTER_IDS: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
 +
++#[cfg(not(windows))]
++static VIDEO_ADAPTER: std::sync::OnceLock<wgpu::Adapter> = std::sync::OnceLock::new();
++
 +pub fn set_adapter_ids(vendor: u32, device: u32) {
 +    let _ = ADAPTER_IDS.set((vendor, device));
++}
++
++#[cfg(not(windows))]
++pub fn set_video_memory_adapter(adapter: wgpu::Adapter) {
++    let _ = VIDEO_ADAPTER.set(adapter);
 +}
 +
 +/// How much of the graphics chip's own memory Windows lets this process use, and how much it
@@ -11517,28 +11520,9 @@ index 000000000..ee37bb25b
 +
 +#[cfg(not(windows))]
 +pub fn video_memory() -> Option<(u64, u64)> {
-+    #[cfg(target_os = "linux")]
-+    let rss = std::fs::read_to_string("/proc/self/statm")
-+        .ok()
-+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-+        .map(|pages| pages * 4096)
-+        .unwrap_or(0);
-+
-+    #[cfg(not(target_os = "linux"))]
-+    let rss = {
-+        let mut rss = 0usize;
-+        let mut zero = [0usize; 7];
-+        // SAFETY: plain out-pointers to mimalloc process info.
-+        unsafe {
-+            let [a, b, c, d, e, f, g] = &mut zero;
-+            libmimalloc_sys::mi_process_info(a, b, c, &mut rss, d, e, f, g);
-+        }
-+        rss as u64
-+    };
-+
-+    // Baseline memory budget of 1024 MB for platforms without DXGI video memory queries.
-+    let budget = 1024u64 << 20;
-+    Some((budget, rss.min(budget * 2)))
++    VIDEO_ADAPTER
++        .get()
++        .and_then(ruffle_render_wgpu::adapter_memory)
 +}
 +
 +/// A smaller graphics memory budget to test the memory watch with on a big card: a file
@@ -14516,7 +14500,7 @@ index 5dcf43c0a..1c7d14b40 100644
  use ruffle_render::bitmap::{
      Bitmap, BitmapFormat, BitmapHandle, BitmapSource, PixelRegion, RgbaBufRead, SyncHandle,
  };
-@@ -60,16 +60,38 @@ pub fn create_wgpu_instance(
+@@ -60,16 +60,58 @@ pub fn create_wgpu_instance(
      };
      wgpu::Instance::new(wgpu::InstanceDescriptor {
          backends,
@@ -14545,6 +14529,26 @@ index 5dcf43c0a..1c7d14b40 100644
      })
  }
  
++/// AQW build: returns the graphics-memory budget and current usage exposed by the native API.
++pub fn adapter_memory(adapter: &wgpu::Adapter) -> Option<(u64, u64)> {
++    unsafe {
++        #[cfg(target_os = "linux")]
++        {
++            return adapter
++                .as_hal::<wgpu::hal::api::Vulkan>()
++                .and_then(|adapter| adapter.memory_budget());
++        }
++        #[cfg(target_os = "macos")]
++        {
++            return adapter
++                .as_hal::<wgpu::hal::api::Metal>()
++                .and_then(|adapter| adapter.memory_budget());
++        }
++        #[allow(unreachable_code)]
++        None
++    }
++}
++
  pub struct WgpuRenderBackend<T: RenderTarget> {
      pub(crate) descriptors: Arc<Descriptors>,
 +    /// AQW build: shape vertices/indices and gradient uniforms (see `crate::arena`). Per
