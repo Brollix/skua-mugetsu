@@ -10,8 +10,9 @@ macOS: unzip the `-macos-universal` zip and open `Mugetsu.app`.)
 
 ## Contact
 
-Questions, bug reports or feedback: Discord **silver09415**. When reporting a problem, include your log
-(`%LOCALAPPDATA%\ruffle\log\ruffle.log`, it has no account details).
+Questions, bug reports or feedback: Discord **silver09415**. For help with the Linux version: Discord
+**jonasalv0** first, or **silver09415**. When reporting a problem, include your log (`%LOCALAPPDATA%\ruffle\log\ruffle.log` on Windows,
+`~/.cache/ruffle/log` on Linux; it has no account details).
 
 ---
 
