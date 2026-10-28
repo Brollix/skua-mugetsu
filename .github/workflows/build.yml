@@ -5,6 +5,9 @@
 # - Actions > Build Mugetsu > Run workflow, with "Create a draft release" ticked: also makes a
 #   draft release with the Windows zip, the Linux archive, the macOS zip and their SHA-256
 #   (notes from source/notes/<version>.md), to check and publish by hand.
+#   "Skip macOS" (for when GitHub has no Mac free): the draft has Windows and Linux only, and
+#   the notes' macOS lines are left out. "Add macOS to the existing release" later builds only
+#   the Mac app and uploads it to that release (put the macOS lines back into its notes then).
 name: Build Mugetsu
 
 on:
@@ -19,6 +22,14 @@ on:
         description: 'Create a draft release'
         type: boolean
         default: false
+      skip_macos:
+        description: 'Skip macOS (draft with Windows and Linux only)'
+        type: boolean
+        default: false
+      attach_macos:
+        description: 'Add macOS to the existing release (builds only the Mac app)'
+        type: boolean
+        default: false
 
 # Read-only by default (pull requests run with this); only the release job writes.
 permissions:
@@ -26,6 +37,7 @@ permissions:
 
 jobs:
   windows:
+    if: ${{ !inputs.attach_macos }}
     runs-on: windows-latest
     timeout-minutes: 240
     outputs:
@@ -88,6 +100,7 @@ jobs:
   linux:
     # The oldest supported Ubuntu runner: the program then runs on systems from about 2022 on
     # (it needs the C library of the system it was built on, or newer).
+    if: ${{ !inputs.attach_macos }}
     runs-on: ubuntu-22.04
     timeout-minutes: 240
     outputs:
@@ -149,6 +162,7 @@ jobs:
     # (the previous Apple silicon image) is retired on 2 November 2026. The app is built
     # universal, so one zip runs on both Apple silicon and Intel Macs; its deployment
     # target (macOS 11.0) comes from build-macos.sh, not from the runner.
+    if: ${{ !inputs.skip_macos }}
     runs-on: macos-15
     timeout-minutes: 360
     outputs:
@@ -200,7 +214,11 @@ jobs:
           path: release
 
   release:
-    if: ${{ inputs.release }}
+    # Without macOS when it's skipped; `!cancelled()` lets this run after a skipped job.
+    if: >-
+      ${{ !cancelled() && inputs.release && !inputs.attach_macos
+      && needs.windows.result == 'success' && needs.linux.result == 'success'
+      && (inputs.skip_macos || needs.macos.result == 'success') }}
     needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
@@ -223,7 +241,9 @@ jobs:
           SHA: ${{ needs.windows.outputs.sha }}
           LINUX_SHA: ${{ needs.linux.outputs.sha }}
           MACOS_SHA: ${{ needs.macos.outputs.sha }}
+          SKIP_MACOS: ${{ inputs.skip_macos }}
         run: |
+          if [ "$SKIP_MACOS" = true ]; then MACOS_VERSION=$VERSION; fi
           if [ "$VERSION" != "$LINUX_VERSION" ] || [ "$VERSION" != "$MACOS_VERSION" ]; then
             echo "Versions differ: Windows ($VERSION), Linux ($LINUX_VERSION), macOS ($MACOS_VERSION)"; exit 1
           fi
@@ -233,4 +253,31 @@ jobs:
           sed -e "s/LINUX_SHA_PLACEHOLDER/$LINUX_SHA/g" \
               -e "s/MACOS_SHA_PLACEHOLDER/$MACOS_SHA/g" \
               -e "s/SHA_PLACEHOLDER/$SHA/g" "$notes" > notes.md
+          if [ "$SKIP_MACOS" = true ]; then
+            # The macOS download and SHA lines, the "macOS version" paragraph, its VirusTotal link.
+            sed -i -e '/macos-universal/d' -e '/^\*\*macOS version\*\*$/,/^$/d' \
+                -e 's/ · \[macOS zip\](VT_MACOS)//' notes.md
+          fi
           gh release create "v$VERSION" release/* --draft --title "Mugetsu $VERSION" --notes-file notes.md --target "$GITHUB_SHA"
+
+  attach-macos:
+    if: ${{ inputs.attach_macos && needs.macos.result == 'success' }}
+    needs: [macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-macos
+          path: release
+
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.macos.outputs.version }}
+          MACOS_SHA: ${{ needs.macos.outputs.sha }}
+        run: |
+          gh release upload "v$VERSION" release/* --clobber
+          printf '## Added to v%s\n\n`Mugetsu-%s-macos-universal.zip`: `%s`\n' "$VERSION" "$VERSION" "$MACOS_SHA" >> "$GITHUB_STEP_SUMMARY"
