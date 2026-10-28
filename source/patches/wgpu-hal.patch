@@ -1632,10 +1632,58 @@ index ca626f2..7d8798e 100644
      unsafe fn transition_buffers<'a, T>(&mut self, barriers: T)
      where
          T: Iterator<Item = BufferBarrier<'a, <Self::A as Api>::Buffer>>;
+diff --git a/src/metal/adapter.rs b/src/metal/adapter.rs
+--- a/src/metal/adapter.rs
++++ b/src/metal/adapter.rs
+@@ -60,4 +60,8 @@ impl super::Adapter {
+     pub fn raw_device(&self) -> &ProtocolObject<dyn MTLDevice> {
+         &self.shared.device
+     }
++    pub fn memory_budget(&self) -> Option<(u64, u64)> {
++        let budget = self.shared.device.recommendedMaxWorkingSetSize() as u64;
++        (budget != 0).then(|| (budget, self.shared.device.currentAllocatedSize() as u64))
++    }
+ }
 diff --git a/src/vulkan/adapter.rs b/src/vulkan/adapter.rs
 index 196daf4..65547f6 100644
 --- a/src/vulkan/adapter.rs
 +++ b/src/vulkan/adapter.rs
+@@ -2500,5 +2500,35 @@ impl super::Adapter {
+     pub fn raw_physical_device(&self) -> vk::PhysicalDevice {
+         self.raw
+     }
++
++    pub fn memory_budget(&self) -> Option<(u64, u64)> {
++        if !self
++            .phd_capabilities
++            .supports_extension(ext::memory_budget::NAME)
++        {
++            return None;
++        }
++        let mut budget_props = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
++        let mut props = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget_props);
++        unsafe {
++            self.instance
++                .raw
++                .get_physical_device_memory_properties2(self.raw, &mut props);
++        }
++        let heaps = props.memory_properties.memory_heaps_as_slice();
++        let budget = heaps
++            .iter()
++            .enumerate()
++            .filter(|(_, heap)| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
++            .map(|(i, _)| budget_props.heap_budget[i])
++            .sum();
++        let usage = heaps
++            .iter()
++            .enumerate()
++            .filter(|(_, heap)| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
++            .map(|(i, _)| budget_props.heap_usage[i])
++            .sum();
++        (budget != 0).then_some((budget, usage))
++    }
+ 
+     pub fn get_physical_device_features(&self) -> &PhysicalDeviceFeatures {
 @@ -2948,7 +2948,7 @@ impl super::Adapter {
              wait_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Wait)),
          };
