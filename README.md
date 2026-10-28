@@ -1,11 +1,12 @@
 # Mugetsu
 
-**A faster way to play AdventureQuest Worlds on Windows and Linux.**
+**A faster way to play AdventureQuest Worlds on Windows, Linux and macOS.**
 Crowded rooms, big fights and room changes stay at a smooth, steady frame rate.
 
 ### [⬇ Download the latest version](https://github.com/mugetsu-aqw/mugetsu/releases/latest)
 
-Unzip, run `Mugetsu.exe`, log in. Nothing to install. (Linux: extract the `-linux` archive and run `Mugetsu`.)
+Unzip, run `Mugetsu.exe`, log in. Nothing to install. (Linux: extract the `-linux` archive and run `Mugetsu`.
+macOS: unzip the `-macos-universal` zip and open `Mugetsu.app`.)
 
 ## Contact
 
@@ -45,7 +46,9 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 ## Requirements
 
 - Windows 10 or 11, 64-bit, or 64-bit Linux from about 2022 on (Ubuntu 22.04, Debian 12, Fedora 36,
-  SteamOS 3 or newer; Linux uses Vulkan or OpenGL, details in the README inside the Linux download)
+  SteamOS 3 or newer; Linux uses Vulkan or OpenGL, details in the README inside the Linux download),
+  or macOS 11 (Big Sur) or newer on Apple silicon or Intel (uses Metal; details in the README inside
+  the macOS download)
 - A graphics card with **Vulkan** (NVIDIA GTX 600 / AMD Radeon HD 7000 / Intel 6th-gen Core or newer).
   On Intel and Qualcomm (Snapdragon) graphics, Mugetsu uses DirectX 12 (their Vulkan drivers crash
   or show a black window on several chips); since 1.1 it runs about as well as Vulkan. Without Vulkan,
@@ -54,7 +57,7 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
   or DirectX 12 (try DirectX 12 if the window stays black or stutters).
 - **Graphics memory:** 2 GB minimum (with AQW's Quality set to **Low**), 4 GB or more recommended
 - **RAM:** 8 GB minimum, 16 GB recommended
-- **CPU with AVX2:** Intel 4th-gen Core (2013) or newer, AMD Ryzen or newer
+- **CPU with AVX2** (Windows and Linux): Intel 4th-gen Core (2013) or newer, AMD Ryzen or newer
 
 ## How to use
 
@@ -62,6 +65,10 @@ where version 1.2 managed about 20, and draws each frame about **3.5× faster**.
 2. Run `Mugetsu.exe`. The first time, Windows may say *"Windows protected your PC"* because the program
    isn't signed by a known publisher: click **More info → Run anyway**.
 3. Log in as usual.
+
+**macOS:** unzip the `-macos-universal.zip` and open `Mugetsu.app`. The first time, macOS blocks it
+because it isn't notarized by Apple: open **System Settings → Privacy & Security**, click **Open Anyway**
+next to the message about Mugetsu, then confirm. The README inside the download has the steps for older macOS.
 
 **Settings:** right-click anywhere on the game for Mugetsu's menu: **Frame interpolation** (smoother motion on
 strong PCs, off by default), **Edge smoothing**, **Graphics**, **Show FPS**, **Full screen** and **Open log folder**.
