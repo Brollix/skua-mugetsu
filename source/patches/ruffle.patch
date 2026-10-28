@@ -10200,7 +10200,7 @@ index 2383b2dde..e79d1f30f 100644
          let surface = instance.create_surface(window.clone())?;
          let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
              backend,
-@@ -72,12 +80,36 @@ impl GuiController {
+@@ -72,12 +80,37 @@ impl GuiController {
          ))
          .map_err(|e| anyhow!(e.to_string()))?;
          let adapter_info = adapter.get_info();
