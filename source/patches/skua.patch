@@ -1,8 +1,8 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index a27cda89..1a4292d5 100644
+index 3d9b65e3..e843f322 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -5016,6 +5016,7 @@ dependencies = [
+@@ -5017,6 +5017,7 @@ dependencies = [
   "windows-sys 0.61.2",
   "winit",
   "winresource",
@@ -46,10 +46,10 @@ index 43e19628..4f3b31c5 100644
              Value::Bool(b) => JsonValue::from(b),
              Value::String(s) => JsonValue::from(s.to_utf8_lossy().deref()),
 diff --git a/desktop/Cargo.toml b/desktop/Cargo.toml
-index a011c947..c67cc8f7 100644
+index b36589f7..3dbc2edb 100644
 --- a/desktop/Cargo.toml
 +++ b/desktop/Cargo.toml
-@@ -68,6 +68,8 @@ fontconfig = { version = "0.11.0", optional = true }
+@@ -70,6 +70,8 @@ fontconfig = { version = "0.11.0", optional = true }
  
  [target.'cfg(target_os = "linux")'.dependencies]
  ashpd = { version = "0.13.0", features = ["settings", "game_mode"] }
@@ -59,10 +59,10 @@ index a011c947..c67cc8f7 100644
  [target.'cfg(windows)'.dependencies]
  # AQW build: DXGI, to see which graphics chip Mugetsu will use (see `mugetsu::intel_graphics`).
 diff --git a/desktop/src/app.rs b/desktop/src/app.rs
-index ba7158bb..7321056a 100644
+index a5f7bc25..db3f3914 100644
 --- a/desktop/src/app.rs
 +++ b/desktop/src/app.rs
-@@ -567,6 +567,11 @@ impl MainWindow {
+@@ -588,6 +588,11 @@ impl MainWindow {
                  // Keep MouseMove -> MouseDown ordering and an up-to-date hover target.
                  self.flush_mouse_move();
  
@@ -74,7 +74,7 @@ index ba7158bb..7321056a 100644
                  use ruffle_core::events::MouseButton as RuffleMouseButton;
                  use winit::event::MouseButton;
                  let (x, y) = self.gui.window_to_movie_position(self.mouse_pos);
-@@ -756,7 +761,8 @@ impl MainWindow {
+@@ -777,7 +782,8 @@ impl MainWindow {
  
          // To prevent issues like waiting on resize indefinitely (#11364) or desyncing the window state on Windows,
          // do not resize while window is maximized.
@@ -84,7 +84,7 @@ index ba7158bb..7321056a 100644
  
          let (viewport_size, state) = if should_resize {
              let movie_width = swf_header.stage_size().width().to_pixels();
-@@ -843,7 +849,28 @@ impl MainWindow {
+@@ -864,7 +870,28 @@ impl MainWindow {
          }
      }
  
@@ -113,7 +113,7 @@ index ba7158bb..7321056a 100644
          if let Some(Event { event, .. }) = gilrs.and_then(|gilrs| gilrs.next_event()) {
              match event {
                  EventType::ButtonPressed(button, _) => {
-@@ -1088,6 +1115,22 @@ impl App {
+@@ -1118,6 +1145,22 @@ impl App {
      }
  }
  
@@ -136,7 +136,7 @@ index ba7158bb..7321056a 100644
  impl ApplicationHandler<RuffleEvent> for App {
      fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
          enter_runtime!(self);
-@@ -1117,6 +1160,11 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -1147,6 +1190,11 @@ impl ApplicationHandler<RuffleEvent> for App {
                  .with_window_icon(Some(icon))
                  .with_min_inner_size(min_window_size);
  
@@ -148,7 +148,7 @@ index ba7158bb..7321056a 100644
              #[cfg(target_os = "linux")]
              {
                  use winit::platform::startup_notify::{
-@@ -1236,6 +1284,8 @@ impl ApplicationHandler<RuffleEvent> for App {
+@@ -1266,6 +1314,8 @@ impl ApplicationHandler<RuffleEvent> for App {
                  }
              }
  
@@ -190,11 +190,34 @@ index 13be623d..22f8757f 100644
      /// The movie wants to open a dialog.
      OpenDialog(DialogDescriptor),
  
+diff --git a/desktop/src/gui/controller.rs b/desktop/src/gui/controller.rs
+index fb35b08f..510202bc 100644
+--- a/desktop/src/gui/controller.rs
++++ b/desktop/src/gui/controller.rs
+@@ -106,7 +106,6 @@ impl GuiController {
+             &adapter_info,
+             preferences.graphics_power_preference().into(),
+         );
+-        crate::mugetsu::spawn_update_check(window.clone());
+         #[cfg(windows)]
+         if crate::mugetsu::plays_aqw() {
+             crate::windows::add_graphics_menu(&window);
+@@ -361,6 +360,10 @@ impl GuiController {
+                 surface_texture
+             }
+             state @ (wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
++                if crate::skua::active() && matches!(state, wgpu::CurrentSurfaceTexture::Lost) {
++                    tracing::info!("Skua surface lost (host window closed), exiting");
++                    std::process::exit(0);
++                }
+                 // Reconfigure the surface if lost or outdated.
+                 // Some sources suggest ignoring `Outdated` and waiting for the next frame,
+                 // but I suspect this advice is related explicitly to resizing,
 diff --git a/desktop/src/main.rs b/desktop/src/main.rs
-index 91a3223d..0f363949 100644
+index 0c50b93f..ac5f6878 100644
 --- a/desktop/src/main.rs
 +++ b/desktop/src/main.rs
-@@ -16,6 +16,7 @@ mod log;
+@@ -17,6 +17,7 @@ mod log;
  mod mugetsu;
  mod player;
  mod preferences;
@@ -202,7 +225,7 @@ index 91a3223d..0f363949 100644
  #[cfg(feature = "tracy")]
  mod tracy;
  mod util;
-@@ -204,8 +205,13 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
+@@ -212,8 +213,13 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
      }
      let gui = args.iter().any(|a| is(a, "--gui"));
      args.retain(|a| !is(a, "--gui"));
@@ -217,41 +240,144 @@ index 91a3223d..0f363949 100644
          // A movie was given (or the arguments don't parse; let clap report that): plain Ruffle.
          return args;
      }
-@@ -257,7 +263,10 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
+@@ -280,7 +286,10 @@ fn mugetsu_args() -> Vec<std::ffi::OsString> {
          ("--no-gui", None, None),
          ("--graphics", Some("-g"), Some(graphics)),
-     ];
+     ]);
 -    let mut full = vec![args[0].clone(), AQW_LOADER_URL.into()];
 +    let mut full = vec![args[0].clone()];
 +    if !skua {
 +        full.push(AQW_LOADER_URL.into());
 +    }
      for (flag, short, value) in defaults {
-         if (*flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
+         if (flag == "--no-gui" && gui) || given(flag) || short.is_some_and(given) {
              continue;
 diff --git a/desktop/src/mugetsu.rs b/desktop/src/mugetsu.rs
-index ee37bb25..aabfcec6 100644
+index 0876301a..e4a805a6 100644
 --- a/desktop/src/mugetsu.rs
 +++ b/desktop/src/mugetsu.rs
-@@ -10,7 +10,7 @@ use winit::window::Window;
+@@ -10,10 +10,7 @@ use winit::window::Window;
  
  /// Mugetsu's own version. Keep it equal to `ProductVersion` in desktop/Cargo.toml
  /// ([package.metadata.winresource]) and to the GitHub release tag (`v1.1.1`).
--pub const VERSION: &str = "1.5.1";
-+pub const VERSION: &str = "1.5.1-skua.4";
+-pub const VERSION: &str = "1.6.0";
+-
+-const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
+-const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
++pub const VERSION: &str = "1.6.0-skua.1";
  
- const RELEASES_API: &str = "https://api.github.com/repos/mugetsu-aqw/mugetsu/releases/latest";
- const RELEASES_PAGE: &str = "https://github.com/mugetsu-aqw/mugetsu/releases/latest";
-@@ -686,7 +686,8 @@ pub fn check_gpu_choice(window: Arc<Window>, chosen: &wgpu::AdapterInfo, power:
- /// so and a message (once per version) offers to open the download page. Nothing is
- /// downloaded or installed; a `no-update-check` file next to Mugetsu.exe turns this off.
- pub fn spawn_update_check(window: Arc<Window>) {
+ // --- Window title -------------------------------------------------------------------------
+ 
+@@ -42,7 +39,7 @@ fn config_dir() -> Option<PathBuf> {
+     dirs::config_local_dir().map(|dir| dir.join("ruffle"))
+ }
+ 
+-/// A file named `name` next to Mugetsu's program exists (`verbose-log`, `no-update-check`).
++/// A file named `name` next to Mugetsu's program exists (`verbose-log`, `no-atlas`).
+ pub fn exe_flag(name: &str) -> bool {
+     // Also `name.txt`: Windows hides extensions, so a "new text document" renamed to `name`
+     // is really `name.txt`.
+@@ -741,100 +738,6 @@ pub fn check_gpu_choice(window: Arc<Window>, chosen: &wgpu::AdapterInfo, power:
+         });
+ }
+ 
+-// --- New version notice -------------------------------------------------------------------
+-
+-/// Asks GitHub for the latest release once at startup. If it is newer, the window title says
+-/// so and a message (once per version) offers to open the download page. Nothing is
+-/// downloaded or installed; a `no-update-check` file next to Mugetsu.exe turns this off.
+-pub fn spawn_update_check(window: Arc<Window>) {
 -    if exe_flag("no-update-check") {
-+    // Skua build: Bonxie ships and updates the player itself.
-+    if exe_flag("no-update-check") || crate::skua::active() {
-         return;
-     }
-     let _ = std::thread::Builder::new()
+-        return;
+-    }
+-    let _ = std::thread::Builder::new()
+-        .name("update check".to_string())
+-        .spawn(move || {
+-            let latest = match latest_release() {
+-                Ok(latest) => latest,
+-                Err(error) => {
+-                    tracing::info!("Update check failed: {error}");
+-                    return;
+-                }
+-            };
+-            let Some(latest_number) = parse_version(&latest) else {
+-                return;
+-            };
+-            // `RUFFLE_TEST_UPDATE_FROM=0.9` pretends to be that version (testing).
+-            let current = std::env::var("RUFFLE_TEST_UPDATE_FROM").unwrap_or(VERSION.to_string());
+-            if Some(latest_number) <= parse_version(&current) {
+-                tracing::info!("Mugetsu {current} is up to date (latest release: {latest})");
+-                return;
+-            }
+-            let latest = latest.trim_start_matches('v').to_string();
+-            tracing::info!("Mugetsu {latest} is available");
+-            add_title_note(format!("update {latest} available"));
+-            window.set_title(&window_title());
+-
+-            let Some(dir) = config_dir() else { return };
+-            let marker = dir.join("mugetsu-update-notified");
+-            if std::fs::read_to_string(&marker).is_ok_and(|seen| seen.trim() == latest) {
+-                return;
+-            }
+-            let _ = std::fs::create_dir_all(&dir);
+-            let _ = std::fs::write(&marker, &latest);
+-            let answer = rfd::MessageDialog::new()
+-                .set_level(rfd::MessageLevel::Info)
+-                .set_title("Mugetsu")
+-                .set_description(format!(
+-                    "Mugetsu {latest} is available (you have {current}).\n\n\
+-                    Open the download page?"
+-                ))
+-                .set_buttons(rfd::MessageButtons::YesNo)
+-                .show();
+-            if answer == rfd::MessageDialogResult::Yes {
+-                let _ = webbrowser::open(RELEASES_PAGE);
+-            }
+-        });
+-}
+-
+-fn latest_release() -> Result<String, Box<dyn std::error::Error>> {
+-    let client = reqwest::blocking::Client::builder()
+-        .timeout(Duration::from_secs(15))
+-        .user_agent(format!("Mugetsu/{VERSION}"))
+-        .build()?;
+-    let body = client
+-        .get(RELEASES_API)
+-        .header("Accept", "application/vnd.github+json")
+-        .send()?
+-        .error_for_status()?
+-        .text()?;
+-    let release: serde_json::Value = serde_json::from_str(&body)?;
+-    let tag = release["tag_name"]
+-        .as_str()
+-        .ok_or("no tag_name in the release")?;
+-    Ok(tag.to_string())
+-}
+-
+-/// "v1.0.2" / "1.0.2" -> (1, 0, 2); missing parts are 0.
+-fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+-    let mut parts = text.trim().trim_start_matches('v').split('.');
+-    let mut next = || -> Option<u32> { parts.next().map_or(Some(0), |p| p.parse().ok()) };
+-    Some((next()?, next()?, next()?))
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::parse_version;
+-
+-    #[test]
+-    fn versions() {
+-        assert_eq!(parse_version("v1.0.2"), Some((1, 0, 2)));
+-        assert_eq!(parse_version("1.1"), Some((1, 1, 0)));
+-        assert_eq!(parse_version("v2"), Some((2, 0, 0)));
+-        assert_eq!(parse_version("v1.0-beta"), None);
+-        assert!(parse_version("v1.0.10") > parse_version("1.0.9"));
+-    }
+-}
+-
+ #[cfg(all(test, windows))]
+ mod intel_tests {
+     /// Prints what the Intel check sees on this PC (run with `--nocapture`).
 diff --git a/desktop/src/player.rs b/desktop/src/player.rs
 index b37bdd8a..681f2650 100644
 --- a/desktop/src/player.rs
@@ -268,22 +394,9 @@ index b37bdd8a..681f2650 100644
              builder = builder.with_external_interface(Box::new(DesktopExternalInterfaceProvider {
                  spoof_url: opt.player.spoof_url.clone(),
              }));
-diff --git a/desktop/src/gui/controller.rs b/desktop/src/gui/controller.rs
---- a/desktop/src/gui/controller.rs
-+++ b/desktop/src/gui/controller.rs
-@@ -359,6 +359,10 @@ impl GuiController {
-                 surface_texture
-             }
-             state @ (wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
-+                if crate::skua::active() && matches!(state, wgpu::CurrentSurfaceTexture::Lost) {
-+                    tracing::info!("Skua surface lost (host window closed), exiting");
-+                    std::process::exit(0);
-+                }
-                 // Reconfigure the surface if lost or outdated.
-                 // Some sources suggest ignoring `Outdated` and waiting for the next frame,
-                 // but I suspect this advice is related explicitly to resizing,
 diff --git a/desktop/src/skua.rs b/desktop/src/skua.rs
 new file mode 100644
+index 00000000..0d58d531
 --- /dev/null
 +++ b/desktop/src/skua.rs
 @@ -0,0 +1,286 @@
