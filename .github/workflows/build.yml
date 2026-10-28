@@ -46,7 +46,7 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: ./source/build-window.ps1
+        run: ./source/build-windows.ps1
 
       - name: Package
         id: package

@@ -17,8 +17,8 @@ the release page.
 | `patches/ruffle.patch` | All of Mugetsu's changes to Ruffle |
 | `patches/wgpu-core.patch`, `wgpu-hal.patch`, `gc-arena.patch`, `lyon_path.patch`, `lyon_algorithms.patch` | Changes to five libraries Ruffle uses (wgpu-core 30.0.1, wgpu-hal 30.0.1, gc-arena 0.7.0, lyon_path 1.0.7, lyon_algorithms 1.0.5 from crates.io) |
 | `pgo/aqw.profdata.zip` | The speed profile (PGO): counts of which code runs most while playing AQW, recorded with a measuring build. The compiler uses it to optimize for real play. It holds function names and counts only. |
-| `build-window.ps1`, `build-linux.sh`, `build-macos.sh` | Download Ruffle at `RUFFLE_COMMIT` and the five libraries, apply the patches and build (Windows, Linux) |
-| `release/`, `release-linux/`, `release-macos` | The other files in the Windows zip and the Linux archive (readme, license texts, notices) |
+| `build-windows.ps1`, `build-linux.sh`, `build-macos.sh` | Download Ruffle at `RUFFLE_COMMIT` and the five libraries, apply the patches and build (Windows, Linux, macOS) |
+| `release/`, `release-linux/`, `release-macos/` | The other files in the Windows zip, the Linux archive and the macOS zip (readme, license texts, notices) |
 | `notes/` | Release notes, used for the draft release |
 
 ## Building it yourself (Windows)
@@ -27,7 +27,7 @@ You need [Rust](https://rustup.rs) (`rustup toolchain install 1.99.0`), Java 17 
 compiles its Flash classes with it) and git. Then, in this folder:
 
 ```
-powershell -ExecutionPolicy Bypass -File build-window.ps1
+powershell -ExecutionPolicy Bypass -File build-windows.ps1
 ```
 
 The result is `build\out\Mugetsu.exe`. `-NoPgo` builds without the speed profile. A build takes
@@ -60,13 +60,12 @@ Java 17 or newer and git. Then, in this folder:
 
 The result is `build/out/Mugetsu.app` (and a release zip next to it). `--universal` builds one
 app for Apple silicon and Intel; it needs both Rust targets (`rustup target add
-aarch64-apple-darwin x86_64-apple-darwin`). The build uses no speed profile by default: the
-one in `pgo/` was recorded on Windows. `--no-pgo` builds without the speed profile.
+aarch64-apple-darwin x86_64-apple-darwin`). `--no-pgo` builds without the speed profile.
 
 The macOS build uses Ruffle's macOS features (`fontconfig-dlopen`, so fontconfig is loaded
 from the system at runtime and no Homebrew libraries are needed) and draws with Metal. The
-app is ad-hoc signed, not notarized: macOS asks before the first start of an app downloaded
-from the internet (right-click the app, then Open).
+app is ad-hoc signed, not notarized: macOS blocks the first start of an app downloaded from the
+internet until it's allowed in System Settings > Privacy & Security ("Open Anyway").
 
 ## What the changes do
 

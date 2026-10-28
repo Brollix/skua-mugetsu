@@ -33,9 +33,11 @@ Requirements
 How to use
 ----------
   1. Unzip the download.
-  2. Open Mugetsu.app. The first time, macOS may say it can't check the app because it was
-     made by an unidentified developer: right-click (or Control-click) Mugetsu.app, choose
-     Open, then Open again. (The build is ad-hoc signed, not notarized by Apple.)
+  2. Open Mugetsu.app. The first time, macOS blocks it because Apple hasn't checked it (it's
+     ad-hoc signed, not notarized): click Done, open System Settings > Privacy & Security,
+     scroll down to the message about Mugetsu and click Open Anyway, then confirm. On
+     macOS 14 or older, right-clicking (or Control-clicking) Mugetsu.app and choosing Open
+     also works.
   3. Log in as usual.
   Closing the game window closes everything.
 

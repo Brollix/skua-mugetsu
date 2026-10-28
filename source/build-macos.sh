@@ -10,8 +10,8 @@
 # classes with it) and git. The result is build/out/Mugetsu.app.
 #
 # The build uses Ruffle's macOS feature set (fontconfig loaded at runtime), so no Homebrew
-# libraries are needed. The app is ad-hoc signed: macOS still asks before the first start
-# of a build made on another Mac (right-click the app, then Open).
+# libraries are needed. The app is ad-hoc signed: macOS blocks the first start of a build
+# made on another Mac until it's allowed in System Settings > Privacy & Security.
 #
 # Optional, for building without downloads: MUGETSU_RUFFLE_REMOTE (a local clone of Ruffle
 # to fetch the commit from) and MUGETSU_CRATES_DIR (a folder with the unpacked crates, e.g.
@@ -237,7 +237,7 @@ rm -rf "$package"
 mkdir -p "$package/LICENSES"
 cp -R "$app" "$package/"
 cp -f "$root/release-macos/README.txt" "$package/"
-cp -f "$root/release/THIRD-PARTY-NOTICES.txt" "$package/"
+cp -f "$root/release-macos/THIRD-PARTY-NOTICES.txt" "$package/"
 cp -f "$root/release/LICENSES/"* "$package/LICENSES/"
 cp -f "$root/../LICENSE" "$package/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
 
@@ -248,5 +248,5 @@ run ditto -c -k --norsrc "$package" "$zip"
 
 echo "Built $app"
 echo "Zip:   $zip"
-echo "The app is ad-hoc signed, not notarized: if macOS blocks the first start, right-click"
-echo "the app, choose Open, then Open again."
+echo "The app is ad-hoc signed, not notarized: if macOS blocks the first start, allow it in"
+echo "System Settings > Privacy & Security (Open Anyway)."

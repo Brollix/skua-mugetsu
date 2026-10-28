@@ -1,8 +1,8 @@
 # Builds Mugetsu.exe from Ruffle's source and the patches in this folder.
 #
-#   powershell -ExecutionPolicy Bypass -File build.ps1            (with the speed profile)
-#   powershell -ExecutionPolicy Bypass -File build.ps1 -NoPgo     (without it)
-#   powershell -ExecutionPolicy Bypass -File build.ps1 -PrepareOnly   (patched source only, no build)
+#   powershell -ExecutionPolicy Bypass -File build-windows.ps1            (with the speed profile)
+#   powershell -ExecutionPolicy Bypass -File build-windows.ps1 -NoPgo     (without it)
+#   powershell -ExecutionPolicy Bypass -File build-windows.ps1 -PrepareOnly   (patched source only, no build)
 #
 # Needs: Rust (the version in RUST_VERSION), Java 17+ (Ruffle compiles its Flash classes
 # with it) and git. The result is build\out\Mugetsu.exe.
