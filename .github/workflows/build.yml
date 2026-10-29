@@ -114,10 +114,10 @@ jobs:
             suffix: ''
           - cpu: x86-64-v2
             suffix: '-x86-64-v2'
-    # Only the x86-64-v3 build sets these (the release notes' Linux SHA is its archive's).
+    # Both builds set the same version. No SHA here: a matrix job has one set of outputs, which
+    # the last build to finish would overwrite, so the release job hashes the archives itself.
     outputs:
       version: ${{ steps.package.outputs.version }}
-      sha: ${{ steps.package.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
 
@@ -154,6 +154,14 @@ jobs:
           mkdir -p "$dir/LICENSES" release
           cp source/build/out/Mugetsu "$dir/"
           cp source/release-linux/* "$dir/"
+          if [ -n "$SUFFIX" ]; then
+            # This build's README: its CPU requirement and archive name instead of the AVX2 build's.
+            req='  - A CPU with SSE4.2 (x86-64-v2): Intel Core 1st generation ("Nehalem", 2008) or\n    newer, AMD FX ("Bulldozer", 2011) or newer. This is the build for processors\n    without AVX2; with AVX2, use Mugetsu-*-linux.tar.gz instead (it is faster).'
+            sed "s/Mugetsu-\*-linux\.tar\.gz/Mugetsu-*-linux$SUFFIX.tar.gz/g" source/release-linux/README.txt |
+              awk -v req="$req" '/^  - A CPU with AVX2:/ { print req; skip = 1; next }
+                skip && /^    / { next } { skip = 0; print }' > "$dir/README.txt"
+            grep -q 'SSE4.2' "$dir/README.txt" && ! grep -q 'A CPU with AVX2' "$dir/README.txt"
+          fi
           cp source/release/LICENSES/* "$dir/LICENSES/"
           cp LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
           archive="Mugetsu-$version-linux$SUFFIX.tar.gz"
@@ -164,10 +172,7 @@ jobs:
           echo "Mugetsu $version"
           echo "archive SHA-256: $hash"
           echo "Mugetsu SHA-256: $binHash"
-          if [ -z "$SUFFIX" ]; then
-            echo "version=$version" >> "$GITHUB_OUTPUT"
-            echo "sha=$hash" >> "$GITHUB_OUTPUT"
-          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           printf '## Mugetsu %s (Linux%s)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$SUFFIX" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v6
@@ -257,7 +262,6 @@ jobs:
           LINUX_VERSION: ${{ needs.linux.outputs.version }}
           MACOS_VERSION: ${{ needs.macos.outputs.version }}
           SHA: ${{ needs.windows.outputs.sha }}
-          LINUX_SHA: ${{ needs.linux.outputs.sha }}
           MACOS_SHA: ${{ needs.macos.outputs.sha }}
           SKIP_MACOS: ${{ inputs.skip_macos }}
         run: |
@@ -267,6 +271,10 @@ jobs:
           fi
           notes="source/notes/$VERSION.md"
           if [ ! -f "$notes" ]; then echo "Missing release notes: $notes"; exit 1; fi
+          linux="Mugetsu-$VERSION-linux.tar.gz"
+          linux_v2="Mugetsu-$VERSION-linux-x86-64-v2.tar.gz"
+          LINUX_SHA=$(sha256sum "release/$linux" | cut -d' ' -f1 | tr a-f A-F)
+          LINUX_V2_SHA=$(sha256sum "release/$linux_v2" | cut -d' ' -f1 | tr a-f A-F)
           # LINUX_SHA_PLACEHOLDER and MACOS_SHA_PLACEHOLDER first: they contain SHA_PLACEHOLDER.
           sed -e "s/LINUX_SHA_PLACEHOLDER/$LINUX_SHA/g" \
               -e "s/MACOS_SHA_PLACEHOLDER/$MACOS_SHA/g" \
@@ -275,6 +283,13 @@ jobs:
             # The macOS download and SHA lines, the "macOS version" paragraph, its VirusTotal link.
             sed -i -e '/macos-universal/d' -e '/^\*\*macOS version\*\*$/,/^$/d' \
                 -e 's/ · \[macOS zip\](VT_MACOS)//' notes.md
+          fi
+          # The build without AVX2: its download and SHA lines, unless the notes already have them.
+          if ! grep -qF "$linux_v2" notes.md; then
+            sed -i \
+              -e "/^- \*\*Linux:\*\*/a - **Linux, processors without AVX2:** \`$linux_v2\` below, same steps. It needs SSE4.2 (Intel Core 1st generation or newer, AMD FX or newer)." \
+              -e "/^- \`$linux\`:/a - \`$linux_v2\`: \`$LINUX_V2_SHA\`" notes.md
+            grep -qF "$LINUX_V2_SHA" notes.md
           fi
           gh release create "v$VERSION" release/* --draft --title "Mugetsu $VERSION" --notes-file notes.md --target "$GITHUB_SHA"
 

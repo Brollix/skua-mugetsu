@@ -102,7 +102,8 @@ if ((prepare_only)); then
 fi
 
 # 4. Build. x86-64-v3 (AVX2) like the released builds; paths in the program are shortened.
-# MUGETSU_TARGET_CPU=x86-64-v2 builds for processors without AVX2 (the CI's second Linux build),
+# MUGETSU_TARGET_CPU=x86-64-v2 builds for processors without AVX2 that have SSE4.2 (Intel Nehalem,
+# AMD Bulldozer or newer; the CI's second Linux build),
 # keeping the speed profile and the shortened paths.
 # When several prefixes match, the last one given wins: most specific last.
 flags=("-Ctarget-cpu=${MUGETSU_TARGET_CPU:-x86-64-v3}"
