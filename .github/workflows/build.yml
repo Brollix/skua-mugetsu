@@ -3,7 +3,8 @@
 # - Every change to source/ on main, and every pull request that changes it: test builds,
 #   downloadable from the run's page.
 # - Actions > Build Mugetsu > Run workflow, with "Create a draft release" ticked: also makes a
-#   draft release with the Windows zip, the Linux archive, the macOS zip and their SHA-256
+#   draft release with the Windows zip, the Linux archives (the AVX2 one and -x86-64-v2 for
+#   processors without AVX2), the macOS zip and their SHA-256
 #   (notes from source/notes/<version>.md), to check and publish by hand.
 #   "Skip macOS" (for when GitHub has no Mac free): the draft has Windows and Linux only, and
 #   the notes' macOS lines are left out. "Add macOS to the existing release" later builds only
@@ -103,6 +104,17 @@ jobs:
     if: ${{ !inputs.attach_macos }}
     runs-on: ubuntu-22.04
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        # The released build needs AVX2 and dies with "illegal instruction" without it
+        # (AMD before Excavator, older Pentium/Celeron), so a x86-64-v2 build goes along with it.
+        include:
+          - cpu: x86-64-v3
+            suffix: ''
+          - cpu: x86-64-v2
+            suffix: '-x86-64-v2'
+    # Only the x86-64-v3 build sets these (the release notes' Linux SHA is its archive's).
     outputs:
       version: ${{ steps.package.outputs.version }}
       sha: ${{ steps.package.outputs.sha }}
@@ -128,10 +140,14 @@ jobs:
           java-version: '21'
 
       - name: Build
+        env:
+          MUGETSU_TARGET_CPU: ${{ matrix.cpu }}
         run: bash source/build-linux.sh
 
       - name: Package
         id: package
+        env:
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           version=$(sed -n 's/^pub const VERSION: &str = "\([^"]*\)";.*/\1/p' source/build/ruffle/desktop/src/mugetsu.rs)
           dir=package/Mugetsu
@@ -140,7 +156,7 @@ jobs:
           cp source/release-linux/* "$dir/"
           cp source/release/LICENSES/* "$dir/LICENSES/"
           cp LICENSE "$dir/LICENSES/Mugetsu-LICENSE-GPL-3.0.txt"
-          archive="Mugetsu-$version-linux.tar.gz"
+          archive="Mugetsu-$version-linux$SUFFIX.tar.gz"
           # A tar archive keeps the program's "executable" mark (a zip wouldn't).
           tar -C package --owner=0 --group=0 --numeric-owner -czf "release/$archive" Mugetsu
           hash=$(sha256sum "release/$archive" | cut -d' ' -f1 | tr a-f A-F)
@@ -148,13 +164,15 @@ jobs:
           echo "Mugetsu $version"
           echo "archive SHA-256: $hash"
           echo "Mugetsu SHA-256: $binHash"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$hash" >> "$GITHUB_OUTPUT"
-          printf '## Mugetsu %s (Linux)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$SUFFIX" ]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "sha=$hash" >> "$GITHUB_OUTPUT"
+          fi
+          printf '## Mugetsu %s (Linux%s)\n\narchive SHA-256: `%s`\nMugetsu SHA-256: `%s`\n' "$version" "$SUFFIX" "$hash" "$binHash" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v6
         with:
-          name: release-linux
+          name: release-linux${{ matrix.suffix }}
           path: release
 
   macos:

@@ -28,6 +28,8 @@ Environment:
   MUGETSU_CRATES_DIR     directory containing wgpu-core-30.0.1,
                          wgpu-hal-30.0.1, gc-arena-0.7.0,
                          lyon_path-1.0.7 and lyon_algorithms-1.0.5
+  MUGETSU_TARGET_CPU     processor level to build for (default x86-64-v3,
+                         needs AVX2; x86-64-v2 runs without it)
 USAGE
 }
 while (($#)); do
@@ -100,8 +102,10 @@ if ((prepare_only)); then
 fi
 
 # 4. Build. x86-64-v3 (AVX2) like the released builds; paths in the program are shortened.
+# MUGETSU_TARGET_CPU=x86-64-v2 builds for processors without AVX2 (the CI's second Linux build),
+# keeping the speed profile and the shortened paths.
 # When several prefixes match, the last one given wins: most specific last.
-flags=("-Ctarget-cpu=x86-64-v3"
+flags=("-Ctarget-cpu=${MUGETSU_TARGET_CPU:-x86-64-v3}"
     "--remap-path-prefix=$HOME=home" "--remap-path-prefix=$ruffle=ruffle")
 if [[ -n "${CARGO_HOME:-}" ]]; then
     flags+=("--remap-path-prefix=$CARGO_HOME=cargo")
